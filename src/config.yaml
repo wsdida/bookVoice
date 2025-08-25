@@ -1,0 +1,25 @@
+
+# ... 其他配置项 ...
+input_file: "data/测试小说.txt"
+output_dir: "output"
+effect_dir: "effects"
+whisper_model: "large-v3"
+whisper_threshold: 0.1
+narrator_speaker: "female" # 或者其他可用的 speaker 名称
+
+# --- 新增/修改的配置项用于加速 ---
+# Whisper 校验采样率 (0.0 = 完全禁用, 1.0 = 100% 校验, 0.5 = 50% 校验)
+whisper_sample_rate: 0.5
+
+# 并行处理章节的最大工作线程数
+# 对于 LLM 标注，通常 2-4 个线程就足够，因为大模型推理本身会占用较多资源
+max_workers_ollama: 2
+# 对于 TTS 合成，可以稍高一些，取决于 GPU 内存和 TTS 模型的效率
+max_workers_tts: 2
+
+# config.yaml
+# 注意：这些值会被 API 调用时的参数覆盖
+
+
+# --- 新增配置项结束 ---
+# YOUR_WATTPAD_COOKIES = "wp_id=d3622c8c-f8bf-4725-9b3b-58c6a9bb6040; locale=en_US; lang=1; _gcl_au=1.1.229635524.1753744777; _fbp=fb.1.1753744777766.777872414890237537; _gid=GA1.2.120974872.1753744778; _col_uuid=298a2882-0726-406d-ac2a-637369060a41-3t3k; fs__exp=1; ff=1; dpr=1; tz=-8; X-Time-Zone=Asia%2FShanghai; token=523540601%3A2%3A1753747628%3Aocwa-PRhjN9qSUuepUlBUwz7hhPnL78ZtAHXLdx3q59U3JMl5Qde68qX1-H0WwJQ; te_session_id=1753796025284; isStaff=1; AMP_TOKEN=%24NOT_FOUND; signupFrom=story_reading; TRINITY_USER_ID=702f883b-89be-4578-8c95-d939ccc884f5; TRINITY_USER_DATA=eyJ1c2VySWRUUyI6MTc1Mzc5NjExODM0OCwiZmlyc3RDbGlja1RTIjoxNzUzNzk2MTM0OTcwfQ==; _pubcid=b5931962-36d4-4a22-85ec-aef93fdc80c7; _pubcid_cst=VyxHLMwsHQ%3D%3D; __qca=I0-428836967-1753796333975; cto_bundle=HNW7j18wRUc4SmlKM1d5bENGQmp5RTUlMkZZazlFbTNUSjU4UmNXNTRNakF6ZW1BeW1pUWJVZEo0Nk5iVlFubGVkOTR0TVNlbXAlMkZmYzNlT3BTUjZDSyUyQmVWUk54d00xTEslMkJia1Z6WUZtdEptUzFrVEhyam9yZGJFdEFxcWtYejdZOEUwdU9H; cto_bidid=0NEFNV9DVkF5bzFxeUFsak44eVhTNU1uSGpQWk9qTUR5aTdYYWhxcjhyciUyQlA5MSUyRmhZaFBqZ3JSSlp6ZCUyQmUlMkZqRXNWTzN3QjRBZ2ElMkJPYVRkaWcwTUZ3RlB6eEElM0QlM0Q; _ga=GA1.1.408120238.1753744776; _ga_FNDTZ0MZDQ=GS2.1.s1753796037$o4$g1$t1753797711$j22$l0$h0; _dd_s=logs=1&id=8b383015-fee2-4d25-8b5a-b8b5c3034a5f&created=1753796025287&expire=1753798728025; RT=nu=https%3A%2F%2Fwww.wattpad.com%2F1420810072-the-escaped-con%2527s-hostage-three-buckle-up&cl=1753797726766&r=https%3A%2F%2Fwww.wattpad.com%2F1420515771-the-escaped-con%2527s-hostage-two-don%2527t-scream&ul=1753797835435" # <-- 请填入您的真实 Cookie
