@@ -1,0 +1,77 @@
+# podcast_config.yaml
+# --- 播客整体信息 ---
+podcast:
+  title: "elwoodedwards podcasts"  # 默认值，可被小说名称覆盖
+  description: "When city lights dim, Midnight Chatroom awakens—your weekly sanctuary for unfiltered conversations. Three nocturnal hosts dissect urban mysteries between espresso sips, blending dark humor with philosophical musings. Each Wednesday at midnight, dive into: ① Documentary-style paranormal investigations ② Dark comedy takes on corporate culture ③ Uncensored listener confessions (from alien encounters to subway ghost stories). Production includes binaural audio effects for immersive storytelling, with occasional live-streamed recording sessions from our neon-lit studio. First-time listeners receive our Sleepless in the City starter kit featuring:ASMR subway ambiance track Host-curated midnight snack recipes Digital zine of fan-submitted urban legends"
+  author: "elwoodedwards"
+  email: "elwoodedwards0@gmail.com"
+  link: "http://59.110.17.240/podcasts" # 播客主页
+  image_url: "http://59.110.17.240/podcasts/cover.jpg" # 公开可访问的封面图URL
+  language: "en"
+  copyright: "© 2025 elwoodedwards"
+  explicit: "no" # 'yes', 'no', 'clean'
+  category: "Arts" # iTunes 分类
+
+# --- 文件路径配置 ---
+paths:
+  # 根目录，包含所有小说文件夹 (例如: /path/to/novels/)
+  novels_root_dir: "./downloaded_stories"
+
+  # 相对于 novels_root_dir 的小说文件夹名称 (例如: "The Player Next Door")
+  # --- 这个是需要你配置的 ---
+  novel_folder_name: "The Player Next Door"
+  # --- 这个是需要你配置的 ---
+
+  # 本地输出 RSS 文件路径
+  local_rss_output: "generated_podcast_rss.xml"
+
+  # 已处理章节记录文件路径 (用于断点续传)
+  processed_log_file: "/processed_chapters.log"
+
+  # 音频文件公网基础 URL (必须与部署路径对应)
+  # {novel_name} 和 {chapter_subdir} 会被替换
+  # --- 注意：这个 URL 模式需要匹配你实际的部署结构 ---
+  audio_base_url: "http://59.110.17.240/podcasts/{novel_name}/{chapter_subdir}/chapters"
+
+# --- RSS 生成配置 ---
+rss:
+  # 如果为 true，播客标题将使用小说文件夹名称
+  use_novel_name_as_title: true
+  # 章节标题的生成方式: 'from_file' (从txt文件第一行提取) 或 'from_folder' (从文件夹名提取) 或 'from_ollama' (使用 Ollama 分析内容)
+  chapter_title_source: "from_file"
+  # 默认章节描述
+  default_chapter_description: "本章内容"
+  # 章节发布日期偏移 (天数)，负数表示过去发布
+  publish_date_offset_days: 0
+
+# --- Ollama 配置 ---
+ollama:
+  # 是否启用使用 Ollama 提取章节信息
+  enabled: true
+  # 使用的 Ollama 模型名称
+  model: "mistral:7b" # 你可以根据需要更换模型，例如 glm4:9b, llama3:8b 等
+  # 超时时间 (秒)
+  timeout: 120
+  # 重试次数
+  retries: 2
+sftp:
+  enabled: true # 是否启用上传功能
+  host: "59.110.17.240" # SFTP 服务器地址
+  port: 22 # SFTP 服务器端口
+  username: "root" # 用户名
+  password: "Qwer!@#456" # 密码 (或者使用密钥认证)
+  # 使用密钥认证时，取消注释下面两行并注释掉 password 行
+  # private_key_path: "/path/to/your/private_key"
+  # private_key_passphrase: "your_passphrase_if_any" # 可选
+
+  # 本地 MP3 文件根目录 (此配置在此逻辑中不再直接使用，因为我们使用 novels_root_dir)
+  # local_mp3_base_dir: "audiobook_output"
+
+  # 远程服务器上存放 MP3 文件的基础目录 (必须是绝对路径)
+  # 这个目录应该对应 audio_base_url 的根路径
+  # 例如: 如果 audio_base_url 是 "https://yourdomain.com/podcasts"
+  # 那么 remote_mp3_base_dir 应该是 Web 服务器上 "/podcasts" 对应的文件系统路径
+  remote_mp3_base_dir: "/data/stories"
+
+  # 远程服务器上存放 RSS 文件的完整路径 (包含文件名)
+  remote_rss_path: "/data/stories/{novel_name}/podcast.rss"
