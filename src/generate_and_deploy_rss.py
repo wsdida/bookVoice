@@ -53,6 +53,323 @@ def remove_special_chars(url):
     return re.sub(r'[\s\n]+', '_', url.strip())
 
 
+def discover_chapters_by_audio(config):
+    """
+    根据音频文件的存在状态发现章节
+    """
+    print("开始根据音频文件发现章节...")
+    chapters_info = []
+    paths_config = config['paths']
+    rss_config = config['rss']
+    ollama_config = config.get('ollama', {})
+    novels_root = Path(paths_config['novels_root_dir'])
+    novel_folder_name = paths_config['novel_folder_name']
+    novel_dir = novels_root / novel_folder_name
+
+    if not novel_dir.exists():
+        raise FileNotFoundError(f"小说目录不存在: {novel_dir}")
+
+    # 查找章节目录
+    chapter_pattern = CHAPTER_DIR_PATTERN
+    full_pattern = str(novel_dir / chapter_pattern)
+    print(f"搜索章节目录: {full_pattern}")
+    chapter_dirs = glob.glob(full_pattern)
+    print(f"找到 {len(chapter_dirs)} 个章节目录候选。")
+
+    for chapter_dir_path in chapter_dirs:
+        chapter_dir_path = Path(chapter_dir_path)
+        chapter_subdir_name = chapter_dir_path.name
+
+        # 检查音频文件是否存在
+        audio_exists, mp3_file_path = check_chapter_audio_exists(novel_dir, chapter_subdir_name)
+        if not audio_exists:
+            print(f"  -> 跳过章节 {chapter_subdir_name} (音频文件不存在或为空)")
+            continue
+
+        # 提取章节编号
+        chapter_num_match = re.search(r'Chapter[_\s]*([0-9]+)', chapter_subdir_name, re.IGNORECASE)
+        if not chapter_num_match:
+            print(f"  -> 警告: 无法从目录名 '{chapter_subdir_name}' 提取章节编号，跳过。")
+            continue
+        chapter_number_str = chapter_num_match.group(1)
+        try:
+            chapter_number = int(chapter_number_str)
+            chapter_number_padded = f"{chapter_number:02d}"
+        except ValueError:
+            print(f"  -> 警告: 章节编号 '{chapter_number_str}' 无效，跳过。")
+            continue
+
+        # 查找 TXT 文件用于提取标题
+        txt_search_paths = [
+            os.path.join(chapter_dir_path, TXT_FILE_PATTERN),
+            os.path.join(chapter_dir_path, CHAPTERS_SUBDIR, TXT_FILE_PATTERN)
+        ]
+        txt_file_path = None
+        txt_files_found = []
+        for pattern in txt_search_paths:
+            txt_files_found.extend(glob.glob(pattern))
+        if len(txt_files_found) > 0:
+            txt_file_path = Path(txt_files_found[0])
+
+        # 获取文件大小
+        try:
+            file_size = Path(mp3_file_path).stat().st_size
+        except Exception as e:
+            print(f"  -> 警告: 无法获取文件大小 {mp3_file_path}: {e}, 使用 0。")
+            file_size = 0
+
+        # 确定章节标题和描述
+        chapter_title = f"Chapter {chapter_number_padded}"
+        chapter_description = rss_config['default_chapter_description']
+        if txt_file_path and txt_file_path.exists():
+            ollama_title, ollama_desc = extract_chapter_info_with_ollama(
+                str(txt_file_path), ollama_config, chapter_title, chapter_description
+            )
+            chapter_title = ollama_title
+            chapter_description = ollama_desc
+
+        # 构造公网音频 URL
+        audio_base_url_template = paths_config['audio_base_url']
+        audio_url = audio_base_url_template.format(
+            novel_name=remove_special_chars(novel_folder_name),
+            chapter_subdir=remove_special_chars(chapter_subdir_name)
+        )
+
+        # 获取实际的文件名
+        mp3_filename = Path(mp3_file_path).name
+        audio_url = f"{audio_url.rstrip('/')}/{mp3_filename}"
+
+        # 确定发布日期
+        pub_date = datetime.now(timezone.utc) + timedelta(days=rss_config.get('publish_date_offset_days', 0))
+
+        chapters_info.append({
+            'id': f"{novel_folder_name}_{chapter_subdir_name}",
+            'number': chapter_number,
+            'number_padded': chapter_number_padded,
+            'subdir_name': chapter_subdir_name,
+            'title': chapter_title,
+            'description': chapter_description,
+            'mp3_local_path': str(mp3_file_path),
+            'mp3_url': audio_url,
+            'file_size': file_size,
+            'pub_date': pub_date
+        })
+        print(f"  -> 发现已完成章节: {chapter_subdir_name} (标题: {chapter_title})")
+
+    # 按章节号排序
+    chapters_info.sort(key=lambda x: x['number'])
+    print(f"共发现 {len(chapters_info)} 个已完成的章节。")
+    return chapters_info
+
+
+# 修复 generate_and_deploy_rss.py 中的 check_chapter_audio_exists 函数
+def check_chapter_audio_exists(novel_dir, chapter_subdir_name):
+    """
+    检查章节的音频文件是否存在
+    """
+    # 正确的路径应该是 novel_dir / chapter_subdir_name / CHAPTERS_SUBDIR
+    chapter_dir_path = Path(novel_dir) / chapter_subdir_name / CHAPTERS_SUBDIR
+
+    # 查找音频文件
+    mp3_search_paths = [
+        os.path.join(chapter_dir_path, MP3_FILE_PATTERN)
+    ]
+
+    for pattern in mp3_search_paths:
+        mp3_files_found = glob.glob(pattern)
+        if len(mp3_files_found) > 0:
+            mp3_file_path = Path(mp3_files_found[0])
+            if mp3_file_path.exists() and mp3_file_path.stat().st_size > 0:
+                return True, str(mp3_file_path)
+
+    return False, None
+
+
+# 在 generate_and_deploy_rss.py 文件末尾添加以下函数
+
+def check_and_synthesize_missing_audio(input_directory, config_path='config.yaml'):
+    """
+    检查并合成缺失的音频文件
+    """
+    try:
+        # 遍历所有章节输出目录
+        chapter_dirs = list(Path(input_directory).glob("Chapter_*_audiobook_output"))
+
+        for chapter_dir in chapter_dirs:
+            print(f"检查章节目录: {chapter_dir.name}")
+
+            # 检查最终MP3文件是否存在
+            txt_file = list(chapter_dir.parent.glob(f"{chapter_dir.name.replace('_audiobook_output', '')}.txt"))
+            if txt_file:
+                txt_filename = txt_file[0].stem
+                final_mp3 = chapter_dir / "chapters" / f"{txt_filename}_final.mp3"
+
+                if not final_mp3.exists():
+                    print(f"  -> 缺失最终MP3文件: {final_mp3}")
+
+                    # 检查日志文件
+                    log_file = chapter_dir / "logs" / "audiobook.log"
+                    if log_file.exists():
+                        # 检查日志中是否显示生成完成
+                        with open(log_file, 'r', encoding='utf-8') as f:
+                            log_content = f.read()
+
+                        if "✅ === 有声书生成完成" in log_content:
+                            print(f"  -> 日志显示已完成但缺少MP3文件，重新合成: {chapter_dir.name}")
+                            # 重新生成该章节
+                            try:
+                                from audiobook_generator import generate_audiobook
+                                generate_audiobook(str(chapter_dir.parent), str(txt_file[0]), config_path,
+                                                   force_rebuild=True)
+                                print(f"  -> 重新合成完成: {chapter_dir.name}")
+                            except Exception as e:
+                                print(f"  -> 重新合成失败: {e}")
+                        else:
+                            print(f"  -> 日志显示未完成生成: {chapter_dir.name}")
+                    else:
+                        print(f"  -> 缺少日志文件: {log_file}")
+                else:
+                    print(f"  -> 最终MP3文件已存在: {final_mp3}")
+
+    except Exception as e:
+        print(f"检查和合成过程中出错: {e}")
+
+
+def verify_audio_files_integrity(input_directory):
+    """
+    验证音频文件的完整性
+    """
+    try:
+        chapter_dirs = list(Path(input_directory).glob("Chapter_*_audiobook_output"))
+
+        for chapter_dir in chapter_dirs:
+            print(f"验证章节目录: {chapter_dir.name}")
+
+            # 检查日志文件
+            log_file = chapter_dir / "logs" / "audiobook.log"
+            if not log_file.exists():
+                print(f"  -> 缺少日志文件: {log_file}")
+                continue
+
+            # 读取日志内容
+            with open(log_file, 'r', encoding='utf-8') as f:
+                log_lines = f.readlines()
+
+            # 查找混音完成记录
+            mix_completed = any("✅ 混音完成" in line for line in log_lines)
+            generation_completed = any("✅ === 有声书生成完成" in line for line in log_lines)
+
+            print(f"  -> 混音完成: {mix_completed}")
+            print(f"  -> 生成完成: {generation_completed}")
+
+            # 检查最终MP3文件
+            txt_file = list(chapter_dir.parent.glob(f"{chapter_dir.name.replace('_audiobook_output', '')}.txt"))
+            if txt_file:
+                txt_filename = txt_file[0].stem
+                final_mp3 = chapter_dir / "chapters" / f"{txt_filename}_final.mp3"
+                if final_mp3.exists():
+                    file_size = final_mp3.stat().st_size
+                    print(f"  -> 最终MP3文件大小: {file_size} 字节")
+                    if file_size == 0:
+                        print(f"  -> 最终MP3文件为空，需要重新生成")
+                else:
+                    print(f"  -> 最终MP3文件不存在")
+
+    except Exception as e:
+        print(f"验证音频文件完整性时出错: {e}")
+
+
+def check_rss_consistency(input_directory, config_path='rss_config.yaml'):
+    """
+    检查RSS文件与实际音频文件的一致性
+    """
+    try:
+        # 加载RSS配置
+        import yaml
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+
+        # RSS文件路径
+        rss_file = Path(input_directory) / config['paths']['local_rss_output']
+
+        # 查找所有章节目录
+        chapter_dirs = list(Path(input_directory).glob("Chapter_*_audiobook_output"))
+        completed_chapters = []
+
+        # 检查每个章节目录中是否有完成的音频文件
+        for chapter_dir in chapter_dirs:
+            txt_file = list(chapter_dir.parent.glob(f"{chapter_dir.name.replace('_audiobook_output', '')}.txt"))
+            if txt_file:
+                txt_filename = txt_file[0].stem
+                final_mp3 = chapter_dir / "chapters" / f"{txt_filename}_final.mp3"
+                if final_mp3.exists() and final_mp3.stat().st_size > 0:
+                    # 从目录名提取章节编号
+                    match = re.search(r'Chapter[_\s]*([0-9]+)', chapter_dir.name, re.IGNORECASE)
+                    if match:
+                        chapter_num = int(match.group(1))
+                        completed_chapters.append(chapter_num)
+
+        print(f"已完成的章节: {sorted(completed_chapters)}")
+        print(f"总章节数: {len(chapter_dirs)}")
+        print(f"已完成章节数: {len(completed_chapters)}")
+
+        # 如果有RSS文件，检查其中的条目数
+        if rss_file.exists():
+            try:
+                import feedparser
+                feed = feedparser.parse(str(rss_file))
+                rss_entries = len(feed.entries)
+                print(f"RSS条目数: {rss_entries}")
+
+                if rss_entries != len(completed_chapters):
+                    print(f"  -> RSS条目数与完成章节数不一致，需要更新RSS")
+                    return True  # 需要更新RSS
+            except Exception as e:
+                print(f"  -> 解析RSS文件出错: {e}")
+                return True  # 需要重新生成RSS
+        elif len(completed_chapters) > 0:
+            print(f"  -> 缺少RSS文件但有完成的章节，需要生成RSS")
+            return True  # 需要生成RSS
+
+        return False  # 不需要更新RSS
+
+    except Exception as e:
+        print(f"检查RSS一致性时出错: {e}")
+        return True  # 出错时默认需要更新
+
+
+def comprehensive_check_and_update(input_directory, config_path='config.yaml', rss_config_path='rss_config.yaml'):
+    """
+    综合检查并更新音频文件和RSS
+    """
+    print("=== 开始综合检查 ===")
+
+    # 1. 检查并合成缺失的音频文件
+    print("\n1. 检查并合成缺失的音频文件...")
+    check_and_synthesize_missing_audio(input_directory, config_path)
+
+    # 2. 验证音频文件完整性
+    print("\n2. 验证音频文件完整性...")
+    verify_audio_files_integrity(input_directory)
+
+    # 3. 检查RSS一致性
+    print("\n3. 检查RSS一致性...")
+    need_rss_update = check_rss_consistency(input_directory, rss_config_path)
+
+    # 4. 如果需要，更新RSS
+    if need_rss_update:
+        print("\n4. 更新RSS文件...")
+        try:
+            run_rss_update_process(input_directory)
+            print("✅ RSS更新完成")
+        except Exception as e:
+            print(f"❌ RSS更新失败: {e}")
+    else:
+        print("\n4. RSS文件已是最新，无需更新")
+
+    print("\n=== 综合检查完成 ===")
+
+
 def load_config(config_path='rss_config.yaml'):
     """加载 RSS 配置文件"""
     try:
@@ -124,41 +441,49 @@ def extract_chapter_title_from_file(text_file_path, fallback_title):
         print(f"  -> 警告: 从文件提取章节标题失败 {text_file_path}: {e}")
     return fallback_title
 
+
 def extract_chapter_info_with_ollama(text_file_path, ollama_config, fallback_title, fallback_description):
     """
-    使用 Ollama 大模型从章节文本中提取标题和简介。
+    使用 Ollama 大模型从章节文本中提取英文标题和简介。
     返回 (title, description) 元组。
     """
     if not ollama_config.get('enabled', False):
         print(f"  -> Ollama 未启用，跳过内容分析。")
         return fallback_title, fallback_description
+
     model_name = ollama_config.get('model', 'qwen2:7b')
     timeout = ollama_config.get('timeout', 120)
     retries = ollama_config.get('retries', 2)
+
     try:
         # 读取文本内容
         with open(text_file_path, 'r', encoding='utf-8') as f:
             content = f.read()
+
         if not content.strip():
             print(f"  -> 警告: 章节文件内容为空 {text_file_path}。")
             return fallback_title, fallback_description
-        # 构造提示词
-        prompt = f"""你是一个小说内容分析助手。请仔细阅读以下小说章节的文本内容，并提供简洁明了的标题和简介。,英文表达
-要求：
-1. 标题 (Title)：提供一个能概括本章核心内容的简短标题，长度不超过20个字。
-2. 简介 (Summary)：用一段话（50-100字）总结本章的主要情节、关键事件或重要转折点。
-3. 严格按照以下 JSON 格式返回结果，不要包含其他内容：
+
+        # 构造英文提示词
+        prompt = f"""You are a novel content analysis assistant. Please carefully read the following novel chapter text content and provide a concise and clear title and summary in English.
+
+Requirements:
+1. Title: Provide a short title that summarizes the core content of this chapter, no more than 20 words.
+2. Summary: Summarize the main plot, key events, or important turning points of this chapter in one paragraph (50-100 words).
+3. Return the result strictly in the following JSON format without any other content:
 {{
-  "title": "这里填写提取到的标题",
-  "summary": "这里填写提取到的简介"
+  "title": "The extracted title in English",
+  "summary": "The extracted summary in English"
 }}
-文本内容如下：
-{content[:4000]} # 限制发送给模型的文本长度，避免超时或超出上下文窗口
+
+The text content is as follows:
+{content[:4000]} # Limit the text sent to the model to avoid timeout or exceeding context window
 """
+
         messages = [
-            # {"role": "system", "content": "你是一个精确的小说内容分析工具。"}, # 可选
             {"role": "user", "content": prompt}
         ]
+
         print(f"  -> 调用 Ollama 模型 '{model_name}' 分析章节内容...")
         for attempt in range(retries + 1):
             try:
@@ -167,10 +492,9 @@ def extract_chapter_info_with_ollama(text_file_path, ollama_config, fallback_tit
                     messages=messages,
                 )
                 response_text = response['message']['content'].strip()
+
                 # 尝试解析 JSON
                 import json
-                # 简单清理，尝试提取 JSON 部分
-                # 这里可以更健壮地处理模型可能返回的非标准 JSON
                 json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
@@ -187,6 +511,7 @@ def extract_chapter_info_with_ollama(text_file_path, ollama_config, fallback_tit
                         print(f"  -> 警告: Ollama 返回的文本无法解析为 JSON ({je})。响应内容: {response_text[:100]}...")
                 else:
                     print(f"  -> 警告: Ollama 返回的文本中未找到 JSON 格式。响应内容: {response_text[:100]}...")
+
             except Exception as e:
                 print(f"  -> 警告: Ollama 调用失败 (尝试 {attempt + 1}/{retries + 1}): {e}")
                 if attempt < retries:
@@ -194,9 +519,12 @@ def extract_chapter_info_with_ollama(text_file_path, ollama_config, fallback_tit
                     time.sleep(2 ** attempt)  # 指数退避
                 else:
                     print(f"  -> 错误: Ollama 调用最终失败，使用回退值。")
+
     except Exception as e:
         print(f"  -> 错误: 调用 Ollama 分析章节内容时发生未知错误 {text_file_path}: {e}")
+
     return fallback_title, fallback_description
+
 
 def discover_and_filter_chapters(config, processed_chapters):
     """
@@ -704,6 +1032,202 @@ def upload_files_via_sftp(config, rss_local_path, chapters_info_to_add):
             print("  -> SFTP 连接已关闭 (Transport)。")
 
 # --- 修改：run_rss_update_process 函数，整合断点续传和 SFTP 上传 ---
+def load_existing_rss_entries(rss_output_path):
+    """
+    加载已存在的RSS条目，返回章节编号集合
+    """
+    existing_chapter_numbers = set()
+    if os.path.exists(rss_output_path):
+        try:
+            # 使用 feedparser 解析 RSS 文件
+            parsed_feed = feedparser.parse(rss_output_path)
+            if parsed_feed.bozo:  # bozo 为 True 表示解析时有警告或错误
+                print(f"  -> 警告: 解析 RSS 文件时遇到问题: {parsed_feed.bozo_exception}")
+
+            # 遍历解析出的条目，提取章节编号
+            for entry in parsed_feed.entries:
+                # 从条目链接或标题中提取章节编号
+                # 假设链接格式为 .../chapter_01_final.mp3 或类似格式
+                if hasattr(entry, 'link'):
+                    # 使用正则表达式从链接中提取章节编号
+                    match = re.search(r'chapter[_\s]*([0-9]+)', entry.link, re.IGNORECASE)
+                    if match:
+                        chapter_number = int(match.group(1))
+                        existing_chapter_numbers.add(chapter_number)
+                        continue
+
+                # 如果链接中没有找到，尝试从标题中提取
+                if hasattr(entry, 'title'):
+                    match = re.search(r'[第]?\s*([0-9]+)\s*[章节回]', entry.title)
+                    if match:
+                        chapter_number = int(match.group(1))
+                        existing_chapter_numbers.add(chapter_number)
+
+            print(f"  -> 成功从 RSS 文件加载了 {len(existing_chapter_numbers)} 个已存在的章节条目。")
+        except Exception as e:
+            print(f"  -> 警告: 加载或解析 RSS 文件失败: {e}。")
+    else:
+        print(f"  -> RSS 文件不存在 ({rss_output_path})。")
+
+    return existing_chapter_numbers
+
+
+def get_generated_chapters_info(novel_dir):
+    """
+    获取文件夹下已生成的音频章节信息
+    """
+    generated_chapters = {}
+
+    # 查找章节目录
+    chapter_pattern = CHAPTER_DIR_PATTERN
+    full_pattern = str(Path(novel_dir) / chapter_pattern)
+    chapter_dirs = glob.glob(full_pattern)
+
+    for chapter_dir_path in chapter_dirs:
+        chapter_dir_path = Path(chapter_dir_path)
+        chapter_subdir_name = chapter_dir_path.name
+
+        # 检查音频文件是否存在
+        audio_exists, mp3_file_path = check_chapter_audio_exists(novel_dir, chapter_subdir_name)
+        if not audio_exists:
+            continue
+
+        # 提取章节编号
+        chapter_num_match = re.search(r'Chapter[_\s]*([0-9]+)', chapter_subdir_name, re.IGNORECASE)
+        if not chapter_num_match:
+            continue
+
+        try:
+            chapter_number = int(chapter_num_match.group(1))
+            generated_chapters[chapter_number] = {
+                'dir_name': chapter_subdir_name,
+                'mp3_path': mp3_file_path
+            }
+        except ValueError:
+            continue
+
+    return generated_chapters
+
+
+def compare_rss_and_generated_chapters(config, rss_output_path):
+    """
+    比较RSS中的章节条目与文件夹下已生成的音频章节是否一致
+    返回需要添加到RSS的章节信息列表
+    """
+    paths_config = config['paths']
+    novels_root = Path(paths_config['novels_root_dir'])
+    novel_folder_name = paths_config['novel_folder_name']
+    novel_dir = novels_root / novel_folder_name
+
+    # 获取已存在的RSS条目
+    existing_rss_chapters = load_existing_rss_entries(rss_output_path)
+    print(f"RSS中已存在的章节数: {len(existing_rss_chapters)}")
+
+    # 获取文件夹下已生成的音频章节
+    generated_chapters = get_generated_chapters_info(novel_dir)
+    print(f"文件夹下已生成的音频章节数: {len(generated_chapters)}")
+
+    # 找出需要添加到RSS中的章节（已生成但RSS中不存在的章节）
+    chapters_to_add = []
+    for chapter_number in sorted(generated_chapters.keys()):
+        if chapter_number not in existing_rss_chapters:
+            chapter_info = generated_chapters[chapter_number]
+            chapters_to_add.append({
+                'number': chapter_number,
+                'dir_name': chapter_info['dir_name'],
+                'mp3_path': chapter_info['mp3_path']
+            })
+
+    print(f"需要添加到RSS的章节数: {len(chapters_to_add)}")
+    return chapters_to_add
+
+
+def discover_chapters_by_audio_for_rss(config, chapters_to_add):
+    """
+    根据需要添加的章节列表生成完整的章节信息用于RSS
+    """
+    if not chapters_to_add:
+        return []
+
+    print("根据需要添加的章节生成RSS信息...")
+    chapters_info = []
+    paths_config = config['paths']
+    rss_config = config['rss']
+    ollama_config = config.get('ollama', {})
+    novels_root = Path(paths_config['novels_root_dir'])
+    novel_folder_name = paths_config['novel_folder_name']
+
+    for chapter in chapters_to_add:
+        chapter_number = chapter['number']
+        chapter_subdir_name = chapter['dir_name']
+        mp3_file_path = chapter['mp3_path']
+
+        chapter_dir_path = Path(novels_root) / novel_folder_name / chapter_subdir_name
+        chapter_number_padded = f"{chapter_number:02d}"
+
+        # 查找 TXT 文件用于提取标题
+        txt_search_paths = [
+            os.path.join(chapter_dir_path, TXT_FILE_PATTERN),
+            os.path.join(chapter_dir_path, CHAPTERS_SUBDIR, TXT_FILE_PATTERN)
+        ]
+        txt_file_path = None
+        txt_files_found = []
+        for pattern in txt_search_paths:
+            txt_files_found.extend(glob.glob(pattern))
+        if len(txt_files_found) > 0:
+            txt_file_path = Path(txt_files_found[0])
+
+        # 获取文件大小
+        try:
+            file_size = Path(mp3_file_path).stat().st_size
+        except Exception as e:
+            print(f"  -> 警告: 无法获取文件大小 {mp3_file_path}: {e}, 使用 0。")
+            file_size = 0
+
+        # 确定章节标题和描述
+        chapter_title = f"第 {chapter_number_padded} 章"
+        chapter_description = rss_config['default_chapter_description']
+        if txt_file_path and txt_file_path.exists():
+            ollama_title, ollama_desc = extract_chapter_info_with_ollama(
+                str(txt_file_path), ollama_config, chapter_title, chapter_description
+            )
+            chapter_title = ollama_title
+            chapter_description = ollama_desc
+
+        # 构造公网音频 URL
+        audio_base_url_template = paths_config['audio_base_url']
+        audio_url = audio_base_url_template.format(
+            novel_name=remove_special_chars(novel_folder_name),
+            chapter_subdir=remove_special_chars(chapter_subdir_name)
+        )
+
+        # 获取实际的文件名
+        mp3_filename = Path(mp3_file_path).name
+        audio_url = f"{audio_url.rstrip('/')}/{mp3_filename}"
+
+        # 确定发布日期
+        pub_date = datetime.now(timezone.utc) + timedelta(days=rss_config.get('publish_date_offset_days', 0))
+
+        chapters_info.append({
+            'id': f"{novel_folder_name}_{chapter_subdir_name}",
+            'number': chapter_number,
+            'number_padded': chapter_number_padded,
+            'subdir_name': chapter_subdir_name,
+            'title': chapter_title,
+            'description': chapter_description,
+            'mp3_local_path': str(mp3_file_path),
+            'mp3_url': audio_url,
+            'file_size': file_size,
+            'pub_date': pub_date
+        })
+        print(f"  -> 准备添加章节: {chapter_subdir_name} (标题: {chapter_title})")
+
+    # 按章节号排序
+    chapters_info.sort(key=lambda x: x['number'])
+    print(f"共准备添加 {len(chapters_info)} 个章节到RSS。")
+    return chapters_info
+
+
 def run_rss_update_process(input_directory):
     """封装 RSS 更新和上传的主逻辑，供其他模块调用"""
     try:
@@ -712,48 +1236,33 @@ def run_rss_update_process(input_directory):
         config['paths']['novels_root_dir'] = input_directory_rsplit[0]
         config['paths']['novel_folder_name'] = input_directory_rsplit[1]
 
-        processed_log_file = input_directory + '/' + config['paths']['processed_log_file']
-        # 加载已处理的章节
-        processed_chapters = load_processed_chapters(processed_log_file)
-
-        new_chapters = discover_and_filter_chapters(config, processed_chapters)
-        if not new_chapters:
-            print("\n=== 没有发现新的章节需要处理 ===")
-            # 即使没有新章节，也可能需要重新生成 RSS (例如，手动修改了配置)
-            # 但为了效率，这里可以选择不执行后续步骤
-            # 如果总是想重新生成包含所有已处理章节的 RSS，可以移除这个 return
-            # return True
-
-        # --- 修改：传递 rss_output_path 给 load_or_create_feed ---
+        # 修改这里：比较RSS内容与文件夹下章节是否一致
         rss_output_path = input_directory + '/' + config['paths']['local_rss_output']
+
+        # 比较RSS中的章节条目与文件夹下已生成的音频章节
+        chapters_to_add = compare_rss_and_generated_chapters(config, rss_output_path)
+
+        # 根据需要添加的章节生成完整的章节信息
+        chapters_info = discover_chapters_by_audio_for_rss(config, chapters_to_add)
+
+        # 加载或创建feed
         fg, existing_entries = load_or_create_feed(config, rss_output_path)
-        # --- 修改结束 ---
 
-        # --- 修改：传递 existing_entries 给 add_chapters_to_feed ---
-        add_chapters_to_feed(fg, new_chapters, existing_entries)
-        # --- 修改结束 ---
+        # 添加章节到feed
+        add_chapters_to_feed(fg, chapters_info, existing_entries)
 
-        save_feed(fg, rss_output_path) # 这会覆盖旧的 RSS 文件
-
+        # 保存RSS文件
+        save_feed(fg, rss_output_path)
 
         try:
-            upload_files_via_sftp(config, rss_output_path, new_chapters)
+            upload_files_via_sftp(config, rss_output_path, chapters_info)
             print("=== 文件检查/上传成功 (MD5 比对) ===")
         except Exception as upload_error:
             print(f"=== 文件检查/上传失败 (MD5 比对) ===")
             raise
 
-        # 注意：processed_chapters 和 processed_log_file 的逻辑保持不变
-        # 它们记录的是哪些章节的 *音频文件* 已经被 *处理过* (下载/生成)，
-        # 而不是哪些章节 *条目* 已经被 *写入 RSS*。
-        # 因此，即使旧章节条目被重新加载到 RSS 中，processed_log_file 也不需要改变。
-        # processed_log_file 只在 discover_and_filter_chapters 中用于跳过未处理的章节文件夹。
-        print("\n更新已处理章节记录 (仅针对本次发现的新章节)...")
-        for chapter in new_chapters: # 只记录本次处理的新章节
-            save_processed_chapter(processed_log_file, chapter['id'])
-
-        print("\n=== Podcast RSS 增量更新及文件上传完成 (MD5 比对) ===")
-        print(f"本次处理了 {len(new_chapters)} 个新章节。")
+        print("\n=== Podcast RSS 基于音频文件生成完成 ===")
+        print(f"处理了 {len(chapters_info)} 个已完成的章节。")
         print(f"RSS 文件路径 (本地): {rss_output_path}")
         print(f"请确保音频文件和 RSS 文件可通过对应的公网 URL 访问。")
         return True
@@ -763,10 +1272,11 @@ def run_rss_update_process(input_directory):
         traceback.print_exc()
         return False
 
+
 # --- 主函数入口 ---
 def main():
     """主函数入口，用于独立运行脚本"""
-    success = run_rss_update_process('./downloaded_stories/The Player Next Door') # 修改为你的实际路径
+    success = run_rss_update_process('./downloaded_stories/Moonrise') # 修改为你的实际路径
     if not success:
         import sys
         sys.exit(1)

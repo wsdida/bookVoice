@@ -1,6 +1,8 @@
-# audiobook_generator.py
+# audiobook_generator.py (添加检查现有wav文件功能)
 import os
 import logging
+from pathlib import Path
+
 import yaml
 import torch
 import whisper
@@ -12,6 +14,7 @@ from ollama import Client
 from TTS.api import TTS
 from pydub import AudioSegment
 import sys
+import glob
 
 # 设置环境变量
 os.environ["COQUI_TOS_AGREED"] = "1"
@@ -273,6 +276,7 @@ def synthesize_tts(chapter_file, annotations, role_to_speaker, output_dir, tts, 
                 continue
 
             speaker = get_valid_speaker(role)
+            # 保持现有格式：使用实际的speaker名称作为角色名
             safe_speaker_name = re.sub(r'[\\/:*?"<>|]', '_', speaker)
             output_file = os.path.join(chapter_audio_dir, f'{chapter_num}_{safe_speaker_name}_{i:03d}.wav')
 
@@ -307,14 +311,48 @@ def synthesize_tts(chapter_file, annotations, role_to_speaker, output_dir, tts, 
         raise
 
 
-def mix_audio(annotations, output_dir, effect_dir, force_rebuild=False):
+def find_existing_wav_files(chapter_audio_dir, chapter_formatted):
+    """
+    查找指定章节的所有wav文件
+    返回按序号排序的文件列表
+    """
+    # 查找该章节的所有wav文件
+    pattern = os.path.join(chapter_audio_dir, f'{chapter_formatted}_*_[0-9][0-9][0-9].wav')
+    wav_files = glob.glob(pattern)
+
+    # 按序号排序
+    wav_files.sort(
+        key=lambda x: int(re.search(r'_([0-9]{3})\.wav$', x).group(1)) if re.search(r'_([0-9]{3})\.wav$', x) else 0)
+
+    return wav_files
+
+
+def mix_audio(annotations, output_dir, effect_dir, role_to_speaker=None, force_rebuild=False):
     try:
         print("开始音效混音")
         chapter_audio_dir = os.path.join(output_dir, 'chapters')
         os.makedirs(chapter_audio_dir, exist_ok=True)
 
-        for chapter, anno_list in annotations.items():
-            final_output_file = os.path.join(chapter_audio_dir, f'{chapter}_final.mp3')
+        # 如果role_to_speaker未提供，创建默认映射
+        if role_to_speaker is None:
+            role_to_speaker = {"Narrator": "default"}
+
+        for chapter_key, anno_list in annotations.items():
+            # 确保使用正确的章节编号格式
+            # 如果chapter_key是"chapter_01"这样的格式，直接使用
+            # 否则需要提取数字并格式化
+            if chapter_key.startswith('chapter_'):
+                chapter_formatted = chapter_key
+            else:
+                # 尝试从chapter_key中提取数字
+                match = re.search(r'(\d+)', chapter_key)
+                if match:
+                    chapter_number = int(match.group(1))
+                    chapter_formatted = f'chapter_{chapter_number:02d}'
+                else:
+                    chapter_formatted = chapter_key
+
+            final_output_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_final.mp3')
 
             if os.path.exists(final_output_file) and not force_rebuild:
                 if os.path.getsize(final_output_file) > 0:
@@ -328,24 +366,48 @@ def mix_audio(annotations, output_dir, effect_dir, force_rebuild=False):
                 except OSError as e:
                     print(f"⚠️ 删除最终音频失败 {final_output_file}: {e}")
 
-            print(f"混音章节: {chapter}")
-            chapter_audio = AudioSegment.silent(duration=0)
+            print(f"混音章节: {chapter_formatted}")
 
-            for i, anno in enumerate(anno_list):
-                safe_speaker_name = re.sub(r'[\\/:*?"<>|]', '_', anno["speaker"])
-                audio_file = os.path.join(chapter_audio_dir, f'{chapter}_{safe_speaker_name}_{i:03d}.wav')
-                if not os.path.exists(audio_file):
-                    print(f"❌ 音频文件不存在，跳过: {audio_file}")
-                    continue
-                try:
-                    audio = AudioSegment.from_wav(audio_file)
-                    chapter_audio += audio + AudioSegment.silent(duration=200)
-                except Exception as e:
-                    print(f"加载音频失败 {audio_file}: {str(e)}")
-                    continue
+            # 首先检查是否已存在wav文件，如果存在则直接使用
+            existing_wav_files = find_existing_wav_files(chapter_audio_dir, chapter_formatted)
+            if existing_wav_files :
+                print(f"  -> 发现 {len(existing_wav_files)} 个已存在的wav文件，直接使用")
+                chapter_audio = AudioSegment.silent(duration=0)
+
+                for wav_file in existing_wav_files:
+                    if os.path.exists(wav_file) and os.path.getsize(wav_file) > 0:
+                        try:
+                            audio = AudioSegment.from_wav(wav_file)
+                            chapter_audio += audio + AudioSegment.silent(duration=200)
+                            print(f"  -> 已添加: {os.path.basename(wav_file)}")
+                        except Exception as e:
+                            print(f"  -> 加载音频失败 {wav_file}: {str(e)}")
+                            continue
+                    else:
+                        print(f"  -> 跳过无效文件: {wav_file}")
+            else:
+                # 如果没有现有wav文件，则按原有逻辑生成
+                print(f"  -> 未发现现有wav文件，按原有逻辑生成")
+                chapter_audio = AudioSegment.silent(duration=0)
+
+                for i, anno in enumerate(anno_list):
+                    # 保持现有格式：使用实际的speaker名称作为角色名
+                    role = anno.get('speaker', 'Narrator')
+                    speaker = role_to_speaker.get(role, role_to_speaker.get("Narrator", "default"))
+                    safe_speaker_name = re.sub(r'[\\/:*?"<>|]', '_', speaker)
+                    audio_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_{safe_speaker_name}_{i:03d}.wav')
+                    if not os.path.exists(audio_file):
+                        print(f"❌ 音频文件不存在，跳过: {audio_file}")
+                        continue
+                    try:
+                        audio = AudioSegment.from_wav(audio_file)
+                        chapter_audio += audio + AudioSegment.silent(duration=200)
+                    except Exception as e:
+                        print(f"加载音频失败 {audio_file}: {str(e)}")
+                        continue
 
             if len(chapter_audio) == 0:
-                print(f"⚠️ 章节 {chapter} 无有效音频数据，跳过导出")
+                print(f"⚠️ 章节 {chapter_formatted} 无有效音频数据，跳过导出")
                 continue
 
             bg_added = False
@@ -379,6 +441,33 @@ def mix_audio(annotations, output_dir, effect_dir, force_rebuild=False):
         raise
 
 
+def get_chapter_status(output_dir, chapter_num):
+    """检查章节是否已经完成生成"""
+    chapters_dir = os.path.join(output_dir, 'chapters')
+    # 确保chapter_num格式正确
+    if not chapter_num.startswith('chapter_'):
+        # 如果传入的是数字，格式化为正确的格式
+        if isinstance(chapter_num, int) or chapter_num.isdigit():
+            chapter_num = f'chapter_{int(chapter_num):02d}'
+        else:
+            # 如果chapter_num是类似"01"的字符串，添加前缀
+            match = re.match(r'^(\d+)', chapter_num)
+            if match:
+                chapter_num = f'chapter_{int(match.group(1)):02d}'
+
+    final_file = os.path.join(chapters_dir, f'{chapter_num}_final.mp3')
+    return os.path.exists(final_file) and os.path.getsize(final_file) > 0
+
+
+def find_last_completed_chapter(output_dir, total_chapters):
+    """查找最后一个完成的章节"""
+    for i in range(total_chapters, 0, -1):
+        chapter_num = f'chapter_{i:02d}'
+        if get_chapter_status(output_dir, chapter_num):
+            return i
+    return 0
+
+
 def generate_audiobook(input_directory, input_file_path, config_path='config.yaml', force_rebuild=False):
     try:
         base_output_dir = os.path.dirname(input_file_path)
@@ -399,6 +488,24 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
         whisper_model = whisper.load_model(config.get('whisper_model', 'base'))
 
         chapters = extract_chapters(config['input_file'], config['output_dir'])
+
+        # 断点续传逻辑
+        start_index = 0
+        if not force_rebuild:
+            last_completed = find_last_completed_chapter(output_dir, len(chapters))
+            if last_completed > 0:
+                print(f"检测到前 {last_completed} 个章节已生成，从第 {last_completed + 1} 个章节开始生成")
+                start_index = last_completed
+
+        # 如果不是强制重建且所有章节都已完成，则跳过
+        if not force_rebuild and start_index == len(chapters):
+            print("所有章节均已生成完成，无需重复生成")
+            return
+
+        # 只对需要生成的章节进行处理
+        chapters_to_process = chapters[start_index:]
+
+        # 如果需要重新处理注释（因为可能需要全部章节的注释）
         annotations = annotate_text(chapters, config['output_dir'])
 
         all_speakers = {"Narrator"}
@@ -417,11 +524,25 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
                 role_to_speaker[speaker] = available_speakers[speaker_index % len(available_speakers)]
                 speaker_index += 1
 
-        for chapter_file, anno_list in zip(chapters, annotations.values()):
+        # 只处理需要生成的章节
+        for i, (chapter_file, anno_list) in enumerate(
+                zip(chapters_to_process, list(annotations.values())[start_index:])):
+            actual_index = start_index + i
+            chapter_num = f'chapter_{actual_index + 1:02d}'
+            print(f"开始处理章节 {actual_index + 1}/{len(chapters)}: {chapter_num}")
+
+            # 检查章节是否已完成（双重保险）
+            if not force_rebuild and get_chapter_status(output_dir, chapter_num):
+                print(f"章节 {chapter_num} 已存在，跳过")
+                continue
+
             synthesize_tts(chapter_file, anno_list, role_to_speaker, config['output_dir'], tts, whisper_model,
                            config.get('whisper_threshold', 0.1), force_rebuild=force_rebuild)
 
-        mix_audio(annotations, config['output_dir'], config.get('effect_dir', 'effects'), force_rebuild=force_rebuild)
+        # 混音处理也可以添加断点逻辑
+        annotations_subset = dict(list(annotations.items())[start_index:])
+        mix_audio(annotations_subset, config['output_dir'], config.get('effect_dir', 'effects'),
+                  role_to_speaker, force_rebuild=force_rebuild)
 
         manifest = {
             "chapters": [

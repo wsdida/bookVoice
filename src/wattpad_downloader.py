@@ -1,4 +1,4 @@
-# wattpad_downloader.py
+# wattpad_downloader.py (修复导入卡住问题)
 import asyncio
 import os
 import glob
@@ -21,6 +21,15 @@ STORIES_TO_DOWNLOAD = [
     {
         "url": "http://wattpad.com/story/258988576-see-me",
         "title": "See Me"
+    }, {
+        "url": "https://www.wattpad.com/story/9304697-alpha%27s-girl-wolf-interracial",
+        "title": "AlphaGirl"
+    }, {
+        "url": "https://www.wattpad.com/story/220048804-the-godfather",
+        "title": "The Godfather"
+    }, {
+        "url": "https://www.wattpad.com/story/223762317-criminal-desire-%E2%9C%93",
+        "title": "Criminal Desire"
     }
 ]
 
@@ -29,6 +38,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- 状态管理 ---
 STATUS_FILE = ".status.json"
+
 
 def load_status(output_dir):
     """加载下载状态"""
@@ -44,8 +54,11 @@ def load_status(output_dir):
         "failed_chapters": [],
         "total_chapters": 0,
         "completed": False,
+        "audiobook_generated": False,
+        "rss_updated": False,
         "last_updated": None
     }
+
 
 def save_status(output_dir, status):
     """保存下载状态"""
@@ -53,6 +66,7 @@ def save_status(output_dir, status):
     status_path = os.path.join(output_dir, STATUS_FILE)
     with open(status_path, 'w', encoding='utf-8') as f:
         json.dump(status, f, ensure_ascii=False, indent=2)
+
 
 # --- 爬取逻辑 ---
 async def get_chapter_links(story_url: str, cookies_str: str):
@@ -88,6 +102,7 @@ async def get_chapter_links(story_url: str, cookies_str: str):
         print(f"获取章节链接失败: {e}")
         return []
 
+
 async def download_single_page(page_url: str, headers: dict, page_index: int) -> str:
     """下载单页内容"""
     try:
@@ -108,15 +123,17 @@ async def download_single_page(page_url: str, headers: dict, page_index: int) ->
                 content = '\n'.join(p.get_text(strip=True) for p in ps if p.get_text(strip=True))
             else:
                 container = (soup.find('pre', id='storytext') or
-                           soup.find('div', {'data-testid': 'content'}) or
-                           soup.find('div', class_='panel-reading'))
+                             soup.find('div', {'data-testid': 'content'}) or
+                             soup.find('div', class_='panel-reading'))
                 if container:
                     content = container.get_text(separator='\n', strip=True)
             return content.strip()
     except:
         return ""
 
-async def download_chapter_content(chapter_url: str, chapter_index: int, output_dir: str, cookies_str: str, status: dict):
+
+async def download_chapter_content(chapter_url: str, chapter_index: int, output_dir: str, cookies_str: str,
+                                   status: dict):
     """下载单个章节（支持断点续传）"""
     filename = f"Chapter_{chapter_index:04d}.txt"
     filepath = os.path.join(output_dir, filename)
@@ -148,7 +165,8 @@ async def download_chapter_content(chapter_url: str, chapter_index: int, output_
 
     # 获取第一页
     async with AsyncWebCrawler() as crawler:
-        result = await crawler.arun(url=chapter_url, headers=headers, timeout=60000, extraction_strategy=NoExtractionStrategy())
+        result = await crawler.arun(url=chapter_url, headers=headers, timeout=60000,
+                                    extraction_strategy=NoExtractionStrategy())
         if not result.success:
             print(f"({chapter_index}) 第一页加载失败")
             return False
@@ -193,9 +211,11 @@ async def download_chapter_content(chapter_url: str, chapter_index: int, output_
     await asyncio.sleep(1)
     return True
 
+
 async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
     """重试失败章节"""
-    error_files = glob.glob(os.path.join(output_dir, "*_ERROR.txt")) + glob.glob(os.path.join(output_dir, "*_EXCEPTION.txt"))
+    error_files = glob.glob(os.path.join(output_dir, "*_ERROR.txt")) + glob.glob(
+        os.path.join(output_dir, "*_EXCEPTION.txt"))
     if not error_files:
         return
 
@@ -212,6 +232,7 @@ async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
                     os.remove(file)
                 except:
                     pass
+
 
 # --- 主下载函数 ---
 async def download_single_story(story_info: dict, cookies_str: str, base_output_dir: str):
@@ -231,38 +252,60 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         return False
 
     status["total_chapters"] = len(chapter_urls)
+
+    # 即使故事已完成，也要继续执行后续流程
     if status.get("completed", False) and len(status["completed_chapters"]) >= len(chapter_urls):
-        print(f"故事 '{story_title}' 已完成，跳过。")
-        return True
+        print(f"故事 '{story_title}' 已完成，继续执行后续流程...")
+    else:
+        print(f"共 {len(chapter_urls)} 章节，开始下载...")
+        for i, url in enumerate(chapter_urls, 1):
+            if i in status["completed_chapters"]:
+                continue
+            await download_chapter_content(url, i, story_output_dir, cookies_str, status)
 
-    print(f"共 {len(chapter_urls)} 章节，开始下载...")
-    for i, url in enumerate(chapter_urls, 1):
-        if i in status["completed_chapters"]:
-            continue
-        await download_chapter_content(url, i, story_output_dir, cookies_str, status)
+        # 重试失败
+        await retry_failed_chapters(story_output_dir, chapter_urls, cookies_str, status)
 
-    # 重试失败
-    await retry_failed_chapters(story_output_dir, chapter_urls, cookies_str, status)
-
-    # 检查是否全部完成
-    completed = len(status["completed_chapters"]) >= len(chapter_urls)
-    status["completed"] = completed
-    save_status(story_output_dir, status)
+        # 检查是否全部完成
+        completed = len(status["completed_chapters"]) >= len(chapter_urls)
+        status["completed"] = completed
+        save_status(story_output_dir, status)
+        print(f"故事下载阶段完成。")
 
     end_time = time.time()
-    print(f"\n故事 '{story_title}' 下载完成。耗时: {end_time - start_time:.2f} 秒")
+    print(f"\n故事 '{story_title}' 处理完成。耗时: {end_time - start_time:.2f} 秒")
 
-    # 调用有声书生成
+    # 继续执行有声书生成和RSS更新流程，无论之前是否已完成
     try:
+        # 延迟导入，避免在模块加载时就导入大型依赖
+        print("开始执行有声书生成...")
         from batch_audiobook_generator import generate_audiobooks_in_directory
         config_path = "config.yaml"
         # force_rebuild=False 表示启用断点续传
         generate_audiobooks_in_directory(story_output_dir, config_path, force_rebuild=False)
+        status["audiobook_generated"] = True
         print("有声书生成调用完成。")
+
+        # 更新RSS
+        print("开始执行RSS更新...")
+        from generate_and_deploy_rss import run_rss_update_process
+        run_rss_update_process(story_output_dir)
+        status["rss_updated"] = True
+        print("RSS更新完成。")
+
+        # 保存最终状态
+        save_status(story_output_dir, status)
+
     except Exception as e:
-        print(f"调用有声书生成脚本时出错: {e}")
+        print(f"执行后续流程时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        # 保存当前状态
+        save_status(story_output_dir, status)
+        return False
 
     return True
+
 
 # --- 主函数 ---
 async def main():
@@ -279,8 +322,11 @@ async def main():
                 success += 1
         except Exception as e:
             print(f"下载失败: {e}")
+            import traceback
+            traceback.print_exc()
 
     print(f"\n=== 完成: {success}/{len(STORIES_TO_DOWNLOAD)} 成功 ===")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
