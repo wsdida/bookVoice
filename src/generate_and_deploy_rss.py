@@ -8,6 +8,11 @@ import hashlib  # 用于计算 MD5
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import urllib.parse
+# 新增导入
+from config.database import DatabaseManager
+
+# 在文件顶部添加
+db_manager = DatabaseManager()
 # 尝试导入 feedgen，如果失败则提示安装
 try:
     from feedgen.feed import FeedGenerator
@@ -1227,7 +1232,6 @@ def discover_chapters_by_audio_for_rss(config, chapters_to_add):
     print(f"共准备添加 {len(chapters_info)} 个章节到RSS。")
     return chapters_info
 
-
 def run_rss_update_process(input_directory):
     """封装 RSS 更新和上传的主逻辑，供其他模块调用"""
     try:
@@ -1237,13 +1241,23 @@ def run_rss_update_process(input_directory):
         config['paths']['novels_root_dir'] = input_directory_rsplit[0]
         config['paths']['novel_folder_name'] = input_directory_rsplit[1]
 
+        # 获取故事标题
+        story_title = input_directory_rsplit[1]
+
         # 修改这里：比较RSS内容与文件夹下章节是否一致
         rss_output_path = input_directory + '/' + config['paths']['local_rss_output']
 
         # 比较RSS中的章节条目与文件夹下已生成的音频章节
         chapters_to_add = compare_rss_and_generated_chapters(config, rss_output_path)
 
-        # 根据需要添加的章节生成完整的章节信息
+        # 如果没有需要添加的章节，检查数据库状态
+        if not chapters_to_add:
+            unprocessed_rss_chapters = db_manager.get_unprocessed_rss_chapters(story_title)
+            if not unprocessed_rss_chapters:
+                print("RSS已是最新的，无需更新")
+                return True
+
+        # 根据需要添加的章节生成完整的章节信息用于RSS
         chapters_info = discover_chapters_by_audio_for_rss(config, chapters_to_add)
 
         # 加载或创建feed
@@ -1262,6 +1276,11 @@ def run_rss_update_process(input_directory):
             print(f"=== 文件检查/上传失败 (MD5 比对) ===")
             raise
 
+        # 更新数据库中章节的RSS状态
+        for chapter_info in chapters_info:
+            chapter_num = chapter_info['number']
+            db_manager.update_chapter_rss_status(story_title, chapter_num, 'completed')
+
         print("\n=== Podcast RSS 基于音频文件生成完成 ===")
         print(f"处理了 {len(chapters_info)} 个已完成的章节。")
         print(f"RSS 文件路径 (本地): {rss_output_path}")
@@ -1272,8 +1291,6 @@ def run_rss_update_process(input_directory):
         import traceback
         traceback.print_exc()
         return False
-
-
 # --- 主函数入口 ---
 def main():
     """主函数入口，用于独立运行脚本"""

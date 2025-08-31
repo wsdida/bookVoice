@@ -468,7 +468,7 @@ def find_last_completed_chapter(output_dir, total_chapters):
     return 0
 
 
-def generate_audiobook(input_directory, input_file_path, config_path='config.yaml', force_rebuild=False):
+def generate_audiobook(input_directory, input_file_path, config_path='config.yaml', force_rebuild=False, auto_update_rss=True):
     try:
         base_output_dir = os.path.dirname(input_file_path)
         story_title = os.path.splitext(os.path.basename(input_file_path))[0]
@@ -559,13 +559,17 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
         print("✅ 元数据生成完成")
         logger.info("✅ 元数据生成完成"+input_directory)
 
-        try:
-            from generate_and_deploy_rss import run_rss_update_process
-            run_rss_update_process(input_directory)
-            print("✅ RSS 更新完成")
-        except Exception as rss_error:
-            print(f"❌ 调用 RSS 更新脚本时出错: {rss_error}")
-            logger.error(f"❌ 调用 RSS 更新脚本时出错: {rss_error}")
+        # 将原来的 RSS 更新代码替换为:
+        if auto_update_rss:
+            try:
+                from generate_and_deploy_rss import run_rss_update_process
+                run_rss_update_process(input_directory)
+                print("✅ RSS 更新完成")
+            except Exception as rss_error:
+                print(f"❌ 调用 RSS 更新脚本时出错: {rss_error}")
+                logger.error(f"❌ 调用 RSS 更新脚本时出错: {rss_error}")
+        else:
+            print("⏭️ 跳过自动 RSS 更新，由主控制器处理")
 
         print(f"✅ === 有声书生成完成: {story_title} ===")
         logger.info(f"✅ === 有声书生成完成: {story_title} ===")

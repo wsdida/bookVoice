@@ -9,7 +9,9 @@ from crawl4ai.extraction_strategy import NoExtractionStrategy
 from bs4 import BeautifulSoup
 import time
 import re
-
+from config.database import DatabaseManager
+# 在文件顶部添加
+db_manager = DatabaseManager()
 # --- 配置 ---
 YOUR_WATTPAD_COOKIES = "wp_id=d3622c8c-f8bf-4725-9b3b-58c6a9bb6040; locale=en_US; lang=1; _gcl_au=1.1.229635524.1753744777; _fbp=fb.1.1753744777766.777872414890237537; _gid=GA1.2.120974872.1753744778; _col_uuid=298a2882-0726-406d-ac2a-637369060a41-3t3k; fs__exp=1; ff=1; dpr=1; tz=-8; X-Time-Zone=Asia%2FShanghai; token=523540601%3A2%3A1753747628%3Aocwa-PRhjN9qSUuepUlBUwz7hhPnL78ZtAHXLdx3q59U3JMl5Qde68qX1-H0WwJQ; te_session_id=1753796025284; isStaff=1; AMP_TOKEN=%24NOT_FOUND; signupFrom=story_reading; TRINITY_USER_ID=702f883b-89be-4578-8c95-d939ccc884f5; TRINITY_USER_DATA=eyJ1c2VySWRUUyI6MTc1Mzc5NjExODM0OCwiZmlyc3RDbGlja1RTIjoxNzUzNzk2MTM0OTcwfQ==; _pubcid=b5931962-36d4-4a22-85ec-aef93fdc80c7; _pubcid_cst=VyxHLMwsHQ%3D%3D; __qca=I0-428836967-1753796333975; cto_bundle=HNW7j18wRUc4SmlKM1d5bENGQmp5RTUlMkZZazlFbTNUSjU4UmNXNTRNakF6ZW1BeW1pUWJVZEo0Nk5iVlFubGVkOTR0TVNlbXAlMkZmYzNlT3BTUjZDSyUyQmVWUk54d00xTEslMkJia1Z6WUZtdEptUzFrVEhyam9yZGJFdEFxcWtYejdZOEUwdU9H; cto_bidid=0NEFNV9DVkF5bzFxeUFsak44eVhTNU1uSGpQWk9qTUR5aTdYYWhxcjhyciUyQmVWUk54d00xTEslMkJia1Z6WUZtdEptUzFrVEhyam9yZGJFdEFxcWtYejdZOEUwdU9H; _ga=GA1.1.408120238.1753744776; _ga_FNDTZ0MZDQ=GS2.1.s1753796037$o4$g1$t1753797711$j22$l0$h0; _dd_s=logs=1&id=8b383015-fee2-4d25-8b5a-b8b5c3034a5f&created=1753796025287&expire=1753798728025; RT=nu=https%3A%2F%2Fwww.wattpad.com%2F1420810072-the-escaped-con%2527s-hostage-three-buckle-up&cl=1753797726766&r=https%3A%2F%2Fwww.wattpad.com%2F1420515771-the-escaped-con%2527s-hostage-two-don%2527t-scream&ul=1753797835435"  # 替换为你的真实 Cookie
 
@@ -139,14 +141,18 @@ async def download_single_page(page_url: str, headers: dict, page_index: int) ->
 
 
 async def download_chapter_content(chapter_url: str, chapter_index: int, output_dir: str, cookies_str: str,
-                                   status: dict):
+                                   status: dict, story_title: str):
     """下载单个章节（支持断点续传）"""
     filename = f"Chapter_{chapter_index:04d}.txt"
     filepath = os.path.join(output_dir, filename)
 
+    # 检查数据库中的状态
+    db_manager.create_or_update_chapter(story_title, chapter_index, file_path=filepath)
+
     # 检查是否已成功下载
     if chapter_index in status["completed_chapters"]:
         print(f"({chapter_index}) 章节已标记为完成，跳过: {filepath}")
+        db_manager.update_chapter_download_status(story_title, chapter_index, 'completed')
         return True
 
     # 检查文件是否存在且有效
@@ -160,9 +166,10 @@ async def download_chapter_content(chapter_url: str, chapter_index: int, output_
                     status["completed_chapters"].append(chapter_index)
                     status["completed_chapters"] = sorted(list(set(status["completed_chapters"])))
                     save_status(output_dir, status)
+                db_manager.update_chapter_download_status(story_title, chapter_index, 'completed', len(content))
                 return True
-        except:
-            pass
+        except Exception as e:
+            print(f"({chapter_index}) 检查现有文件时出错: {e}")
 
     print(f"({chapter_index}) 正在下载章节...")
     headers = {"Cookie": cookies_str}
@@ -175,6 +182,7 @@ async def download_chapter_content(chapter_url: str, chapter_index: int, output_
                                     extraction_strategy=NoExtractionStrategy())
         if not result.success:
             print(f"({chapter_index}) 第一页加载失败")
+            db_manager.update_chapter_download_status(story_title, chapter_index, 'failed')
             return False
         soup = BeautifulSoup(result.html, 'html.parser')
         title_tag = soup.find('h1', class_='h2')
@@ -214,9 +222,11 @@ async def download_chapter_content(chapter_url: str, chapter_index: int, output_
     status["completed_chapters"] = sorted(list(set(status["completed_chapters"])))
     save_status(output_dir, status)
 
+    # 更新数据库
+    db_manager.update_chapter_download_status(story_title, chapter_index, 'completed', len(output_text))
+
     await asyncio.sleep(1)
     return True
-
 
 async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
     """重试失败章节"""
@@ -259,15 +269,29 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
 
     status["total_chapters"] = len(chapter_urls)
 
+    # 更新数据库中的故事信息
+    db_manager.create_or_update_story(story_title, story_url, len(chapter_urls))
+
     # 即使故事已完成，也要继续执行后续流程
     if status.get("completed", False) and len(status["completed_chapters"]) >= len(chapter_urls):
         print(f"故事 '{story_title}' 已完成，继续执行后续流程...")
     else:
         print(f"共 {len(chapter_urls)} 章节，开始下载...")
-        for i, url in enumerate(chapter_urls, 1):
-            if i in status["completed_chapters"]:
-                continue
-            await download_chapter_content(url, i, story_output_dir, cookies_str, status)
+
+        # 获取数据库中未下载的章节
+        undownloaded_chapters = db_manager.get_undownloaded_chapters(story_title)
+        if undownloaded_chapters:
+            print(f"发现 {len(undownloaded_chapters)} 个未下载章节，继续下载...")
+            for chapter_num in undownloaded_chapters:
+                if 1 <= chapter_num <= len(chapter_urls):
+                    url = chapter_urls[chapter_num - 1]
+                    await download_chapter_content(url, chapter_num, story_output_dir, cookies_str, status, story_title)
+        else:
+            # 全量下载
+            for i, url in enumerate(chapter_urls, 1):
+                if i in status["completed_chapters"]:
+                    continue
+                await download_chapter_content(url, i, story_output_dir, cookies_str, status, story_title)
 
         # 重试失败
         await retry_failed_chapters(story_output_dir, chapter_urls, cookies_str, status)
@@ -276,6 +300,10 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         completed = len(status["completed_chapters"]) >= len(chapter_urls)
         status["completed"] = completed
         save_status(story_output_dir, status)
+
+        # 更新数据库故事状态
+        db_manager.update_story_status(story_title, 'completed' if completed else 'partial',
+                                       len(status["completed_chapters"]))
         print(f"故事下载阶段完成。")
 
     end_time = time.time()
@@ -293,7 +321,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         print("有声书生成调用完成。")
 
         # 更新RSS
-        print("开始执行RSS更新..."+story_output_dir)
+        print("开始执行RSS更新..." + story_output_dir)
         from generate_and_deploy_rss import run_rss_update_process
         run_rss_update_process(story_output_dir)
         status["rss_updated"] = True
@@ -311,7 +339,6 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         return False
 
     return True
-
 
 # --- 主函数 ---
 async def main():
