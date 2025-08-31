@@ -557,7 +557,7 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
         with open(os.path.join(config['output_dir'], 'manifest.json'), 'w', encoding='utf-8') as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         print("✅ 元数据生成完成")
-        logger.info("✅ 元数据生成完成")
+        logger.info("✅ 元数据生成完成"+input_directory)
 
         try:
             from generate_and_deploy_rss import run_rss_update_process

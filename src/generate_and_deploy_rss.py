@@ -1185,7 +1185,7 @@ def discover_chapters_by_audio_for_rss(config, chapters_to_add):
             file_size = 0
 
         # 确定章节标题和描述
-        chapter_title = f"第 {chapter_number_padded} 章"
+        chapter_title = f"Chapter {chapter_number_padded} "
         chapter_description = rss_config['default_chapter_description']
         if txt_file_path and txt_file_path.exists():
             ollama_title, ollama_desc = extract_chapter_info_with_ollama(
@@ -1231,6 +1231,7 @@ def discover_chapters_by_audio_for_rss(config, chapters_to_add):
 def run_rss_update_process(input_directory):
     """封装 RSS 更新和上传的主逻辑，供其他模块调用"""
     try:
+        input_directory=Path(input_directory).as_posix()
         config = load_config('rss_config.yaml')
         input_directory_rsplit = input_directory.rsplit('/', 1)
         config['paths']['novels_root_dir'] = input_directory_rsplit[0]

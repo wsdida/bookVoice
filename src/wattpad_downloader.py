@@ -30,6 +30,12 @@ STORIES_TO_DOWNLOAD = [
     }, {
         "url": "https://www.wattpad.com/story/223762317-criminal-desire-%E2%9C%93",
         "title": "Criminal Desire"
+    }, {
+        "url": "https://www.wattpad.com/story/387202915-rocco",
+        "title": "Rocco"
+    }, {
+        "url": "https://www.wattpad.com/story/300421715-the-general",
+        "title": "The General"
     }
 ]
 
@@ -287,7 +293,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         print("有声书生成调用完成。")
 
         # 更新RSS
-        print("开始执行RSS更新...")
+        print("开始执行RSS更新..."+story_output_dir)
         from generate_and_deploy_rss import run_rss_update_process
         run_rss_update_process(story_output_dir)
         status["rss_updated"] = True
