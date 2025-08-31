@@ -251,7 +251,9 @@ async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
 
 
 # --- 主下载函数 ---
-async def download_single_story(story_info: dict, cookies_str: str, base_output_dir: str):
+# 在 wattpad_downloader.py 中更新 download_single_story 函数
+
+async def download_single_story(story_info: dict, cookies_str: str, base_output_dir: str, machine_id: str = None):
     story_url = story_info["url"].strip()
     story_title = story_info["title"].strip()
     story_output_dir = os.path.join(base_output_dir, story_title)
@@ -271,6 +273,10 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
 
     # 更新数据库中的故事信息
     db_manager.create_or_update_story(story_title, story_url, len(chapter_urls))
+
+    # 如果提供了机器ID，更新分配信息
+    if machine_id:
+        db_manager.assign_story_to_machine(story_title, machine_id)
 
     # 即使故事已完成，也要继续执行后续流程
     if status.get("completed", False) and len(status["completed_chapters"]) >= len(chapter_urls):
@@ -339,6 +345,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         return False
 
     return True
+
 
 # --- 主函数 ---
 async def main():
