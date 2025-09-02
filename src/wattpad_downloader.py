@@ -15,6 +15,88 @@ db_manager = DatabaseManager()
 # --- 配置 ---
 YOUR_WATTPAD_COOKIES = "wp_id=d3622c8c-f8bf-4725-9b3b-58c6a9bb6040; locale=en_US; lang=1; _gcl_au=1.1.229635524.1753744777; _fbp=fb.1.1753744777766.777872414890237537; _gid=GA1.2.120974872.1753744778; _col_uuid=298a2882-0726-406d-ac2a-637369060a41-3t3k; fs__exp=1; ff=1; dpr=1; tz=-8; X-Time-Zone=Asia%2FShanghai; token=523540601%3A2%3A1753747628%3Aocwa-PRhjN9qSUuepUlBUwz7hhPnL78ZtAHXLdx3q59U3JMl5Qde68qX1-H0WwJQ; te_session_id=1753796025284; isStaff=1; AMP_TOKEN=%24NOT_FOUND; signupFrom=story_reading; TRINITY_USER_ID=702f883b-89be-4578-8c95-d939ccc884f5; TRINITY_USER_DATA=eyJ1c2VySWRUUyI6MTc1Mzc5NjExODM0OCwiZmlyc3RDbGlja1RTIjoxNzUzNzk2MTM0OTcwfQ==; _pubcid=b5931962-36d4-4a22-85ec-aef93fdc80c7; _pubcid_cst=VyxHLMwsHQ%3D%3D; __qca=I0-428836967-1753796333975; cto_bundle=HNW7j18wRUc4SmlKM1d5bENGQmp5RTUlMkZZazlFbTNUSjU4UmNXNTRNakF6ZW1BeW1pUWJVZEo0Nk5iVlFubGVkOTR0TVNlbXAlMkZmYzNlT3BTUjZDSyUyQmVWUk54d00xTEslMkJia1Z6WUZtdEptUzFrVEhyam9yZGJFdEFxcWtYejdZOEUwdU9H; cto_bidid=0NEFNV9DVkF5bzFxeUFsak44eVhTNU1uSGpQWk9qTUR5aTdYYWhxcjhyciUyQmVWUk54d00xTEslMkJia1Z6WUZtdEptUzFrVEhyam9yZGJFdEFxcWtYejdZOEUwdU9H; _ga=GA1.1.408120238.1753744776; _ga_FNDTZ0MZDQ=GS2.1.s1753796037$o4$g1$t1753797711$j22$l0$h0; _dd_s=logs=1&id=8b383015-fee2-4d25-8b5a-b8b5c3034a5f&created=1753796025287&expire=1753798728025; RT=nu=https%3A%2F%2Fwww.wattpad.com%2F1420810072-the-escaped-con%2527s-hostage-three-buckle-up&cl=1753797726766&r=https%3A%2F%2Fwww.wattpad.com%2F1420515771-the-escaped-con%2527s-hostage-two-don%2527t-scream&ul=1753797835435"  # 替换为你的真实 Cookie
 
+
+# 在 wattpad_downloader.py 中添加以下函数
+
+# 在 wattpad_downloader.py 中添加以下函数
+
+async def check_and_redownload_missing_chapters(story_info: dict, cookies_str: str, base_output_dir: str,
+                                                machine_id: str = None):
+    """
+    检查并重新下载缺失的章节
+    """
+    story_url = story_info["url"].strip()
+    story_title = story_info["title"].strip()
+    story_output_dir = os.path.join(base_output_dir, story_title)
+
+    if not os.path.exists(story_output_dir):
+        print(f"故事目录不存在: {story_output_dir}")
+        return False
+
+    print(f"检查故事缺失章节: {story_title}")
+
+    # 获取所有章节链接
+    chapter_urls = await get_chapter_links(story_url, cookies_str)
+    if not chapter_urls:
+        print("未找到章节链接。")
+        return False
+
+    # 检查每个章节文件是否存在
+    missing_chapters = []
+    for i, url in enumerate(chapter_urls, 1):
+        filename = f"Chapter_{i:04d}.txt"
+        filepath = os.path.join(story_output_dir, filename)
+
+        # 检查文件是否存在且有效
+        file_exists = False
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                if content and not content.startswith(("[警告]", "[错误]", "[异常]")) and len(content) > 20:
+                    file_exists = True
+            except Exception as e:
+                print(f"检查章节文件时出错 {filename}: {e}")
+
+        if not file_exists:
+            missing_chapters.append((i, url, filepath))
+
+    if not missing_chapters:
+        print("未发现缺失章节")
+        return True
+
+    print(f"发现 {len(missing_chapters)} 个缺失章节，开始重新下载...")
+
+    # 重新下载缺失的章节
+    status = load_status(story_output_dir)
+    success_count = 0
+
+    for chapter_index, chapter_url, filepath in missing_chapters:
+        print(f"重新下载章节 {chapter_index}...")
+        try:
+            success = await download_chapter_content(
+                chapter_url, chapter_index, story_output_dir, cookies_str, status, story_title
+            )
+            if success:
+                success_count += 1
+                print(f"章节 {chapter_index} 重新下载成功")
+            else:
+                print(f"章节 {chapter_index} 重新下载失败")
+        except Exception as e:
+            print(f"重新下载章节 {chapter_index} 时出错: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"重新下载完成: {success_count}/{len(missing_chapters)} 成功")
+
+    # 更新数据库中的故事状态
+    completed_chapters = len(chapter_urls) - len(missing_chapters) + success_count
+    db_manager.update_story_status(story_title, 'completed' if completed_chapters == len(chapter_urls) else 'partial',
+                                   completed_chapters)
+
+    return success_count == len(missing_chapters)
+
+
 STORIES_TO_DOWNLOAD = [
     {
         "url": "https://www.wattpad.com/story/50979962-moonrise",
@@ -251,7 +333,9 @@ async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
 
 
 # --- 主下载函数 ---
-# 在 wattpad_downloader.py 中更新 download_single_story 函数
+# 在 wattpad_downloader.py 中确保故事 URL 被正确保存到数据库
+
+# 更新 download_single_story 函数中的这部分代码
 
 async def download_single_story(story_info: dict, cookies_str: str, base_output_dir: str, machine_id: str = None):
     story_url = story_info["url"].strip()
@@ -271,7 +355,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
 
     status["total_chapters"] = len(chapter_urls)
 
-    # 更新数据库中的故事信息
+    # 更新数据库中的故事信息，确保 URL 被保存
     db_manager.create_or_update_story(story_title, story_url, len(chapter_urls))
 
     # 如果提供了机器ID，更新分配信息
@@ -301,6 +385,10 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
 
         # 重试失败
         await retry_failed_chapters(story_output_dir, chapter_urls, cookies_str, status)
+
+        # 检查并重新下载缺失的章节
+        print("检查缺失章节...")
+        await check_and_redownload_missing_chapters(story_info, cookies_str, base_output_dir, machine_id)
 
         # 检查是否全部完成
         completed = len(status["completed_chapters"]) >= len(chapter_urls)
@@ -345,7 +433,6 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
         return False
 
     return True
-
 
 # --- 主函数 ---
 async def main():

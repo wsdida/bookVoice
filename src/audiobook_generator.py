@@ -15,7 +15,9 @@ from TTS.api import TTS
 from pydub import AudioSegment
 import sys
 import glob
+from config.database import DatabaseManager
 
+db_manager = DatabaseManager()
 # 设置环境变量
 os.environ["COQUI_TOS_AGREED"] = "1"
 # 全局客户端初始化
@@ -467,7 +469,6 @@ def find_last_completed_chapter(output_dir, total_chapters):
             return i
     return 0
 
-
 def generate_audiobook(input_directory, input_file_path, config_path='config.yaml', force_rebuild=False, auto_update_rss=True):
     try:
         base_output_dir = os.path.dirname(input_file_path)
@@ -489,16 +490,26 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
 
         chapters = extract_chapters(config['input_file'], config['output_dir'])
 
-        # 断点续传逻辑
+        # 断点续传逻辑 - 基于数据库状态
         start_index = 0
         if not force_rebuild:
-            last_completed = find_last_completed_chapter(output_dir, len(chapters))
-            if last_completed > 0:
-                print(f"检测到前 {last_completed} 个章节已生成，从第 {last_completed + 1} 个章节开始生成")
-                start_index = last_completed
+            # 从数据库获取未处理的音频章节
+            unprocessed_chapters = db_manager.get_unprocessed_audio_chapters(story_title)
+            if unprocessed_chapters:
+                # 找到最小的未处理章节编号
+                start_index = min(unprocessed_chapters) - 1  # 转换为0索引
+                print(f"根据数据库状态，从第 {start_index + 1} 个章节开始生成")
+            else:
+                # 检查本地文件状态作为后备
+                last_completed = find_last_completed_chapter(output_dir, len(chapters))
+                if last_completed > 0:
+                    print(f"检测到前 {last_completed} 个章节已生成，从第 {last_completed + 1} 个章节开始生成")
+                    start_index = last_completed
+                else:
+                    print("从第一个章节开始生成")
 
         # 如果不是强制重建且所有章节都已完成，则跳过
-        if not force_rebuild and start_index == len(chapters):
+        if not force_rebuild and start_index >= len(chapters):
             print("所有章节均已生成完成，无需重复生成")
             return
 
@@ -531,13 +542,18 @@ def generate_audiobook(input_directory, input_file_path, config_path='config.yam
             chapter_num = f'chapter_{actual_index + 1:02d}'
             print(f"开始处理章节 {actual_index + 1}/{len(chapters)}: {chapter_num}")
 
-            # 检查章节是否已完成（双重保险）
-            if not force_rebuild and get_chapter_status(output_dir, chapter_num):
-                print(f"章节 {chapter_num} 已存在，跳过")
-                continue
+            # 检查数据库中的章节状态
+            if not force_rebuild:
+                db_chapter_status = db_manager.get_unprocessed_audio_chapters(story_title)
+                if (actual_index + 1) not in db_chapter_status and get_chapter_status(output_dir, chapter_num):
+                    print(f"章节 {chapter_num} 已在数据库中标记为完成且文件存在，跳过")
+                    continue
 
             synthesize_tts(chapter_file, anno_list, role_to_speaker, config['output_dir'], tts, whisper_model,
                            config.get('whisper_threshold', 0.1), force_rebuild=force_rebuild)
+
+            # 更新数据库状态
+            db_manager.update_chapter_audio_status(story_title, actual_index + 1, 'completed')
 
         # 混音处理也可以添加断点逻辑
         annotations_subset = dict(list(annotations.items())[start_index:])

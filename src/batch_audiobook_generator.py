@@ -129,127 +129,69 @@ def verify_audiobook_generation(input_directory, txt_file_path, story_title):
         return False, f"验证过程中出错: {e}"
 
 
-def generate_audiobooks_in_directory(input_directory: str, config_path: str = 'config.yaml',
-                                     force_rebuild: bool = False):
+def generate_audiobooks_in_directory(directory_path, config_path='config.yaml', force_rebuild=False):
     """
-    批量处理目录中的所有 .txt 文件，为每个文件生成对应的有声书（.mp3）
-
-    Args:
-        input_directory (str): 包含 .txt 文件的输入目录
-        config_path (str): 配置文件路径
-        force_rebuild (bool): 是否强制重新生成所有文件
+    在指定目录中批量生成有声书，支持断点续传和数据库状态检查
     """
-    input_dir = Path(input_directory)
+    directory_path = Path(directory_path)
+    story_title = directory_path.name
 
-    if not input_dir.exists():
-        print(f"❌ 错误: 目录不存在: {input_directory}")
+    if not directory_path.exists():
+        print(f"目录不存在: {directory_path}")
         return
 
-    if not input_dir.is_dir():
-        print(f"❌ 错误: 路径不是目录: {input_directory}")
-        return
+    # 获取所有txt文件（章节文件）
+    txt_files = list(directory_path.glob("Chapter_*.txt"))
+    txt_files.sort(key=lambda x: int(re.search(r'Chapter_(\d+)', x.name).group(1))
+    if re.search(r'Chapter_(\d+)', x.name) else 0)
 
-    if not os.path.exists(config_path):
-        print(f"❌ 错误: 配置文件不存在: {config_path}")
-        return
-
-    txt_files = list(input_dir.glob("*.txt"))
     if not txt_files:
-        print(f"🟡 警告: 在目录 '{input_directory}' 中未找到任何 .txt 文件。")
+        print(f"在目录 {directory_path} 中未找到章节文件")
         return
 
-    print(f"📁 在目录 '{input_directory}' 中找到 {len(txt_files)} 个 .txt 文件。\n")
+    print(f"找到 {len(txt_files)} 个章节文件")
 
-    # 获取故事标题（目录名）
-    story_title = input_dir.name
-
-    # 更新数据库中的故事信息
-    db_manager.create_or_update_story(story_title, total_chapters=len(txt_files))
-
-    processed_count = 0
-    failed_files = []
-
-    txt_files.sort(key=lambda x: x.name)
-
-    # 如果不是强制重建，检查数据库中未处理的章节
+    # 获取数据库中未处理的音频章节
     if not force_rebuild:
         unprocessed_chapters = db_manager.get_unprocessed_audio_chapters(story_title)
-        if unprocessed_chapters:
-            print(f"发现 {len(unprocessed_chapters)} 个未处理音频的章节")
-            # 过滤出需要处理的文件
-            txt_files = [f for f in txt_files if any(f"Chapter_{chap:04d}" in f.name for chap in unprocessed_chapters)]
-            print(f"将处理 {len(txt_files)} 个章节")
+        if not unprocessed_chapters:
+            print("数据库中所有章节均已处理完成")
+            return
+        print(f"数据库中有 {len(unprocessed_chapters)} 个章节需要处理: {unprocessed_chapters}")
 
-    for i, txt_file_path in enumerate(txt_files, 1):
-        # 检查对应的输出目录和最终MP3文件是否存在
-        txt_filename = txt_file_path.stem
-        output_dir_name = f"{txt_filename}_audiobook_output"
-        output_dir = Path(input_directory) / output_dir_name
-        final_mp3 = output_dir / "chapters" / f"{txt_filename}_final.mp3"
-
-        # 从文件名提取章节号
-        chapter_match = re.search(r'Chapter_(\d+)', txt_filename)
-        chapter_num = int(chapter_match.group(1)) if chapter_match else 0
-
-        if final_mp3.exists() and not force_rebuild:
-            print(f"✅ ({i}/{len(txt_files)}) 跳过，音频已存在: {final_mp3.name}")
-            if chapter_num > 0:
-                db_manager.update_chapter_audio_status(story_title, chapter_num, 'completed')
-            processed_count += 1
+    # 为每个需要处理的章节生成有声书
+    for txt_file in txt_files:
+        match = re.search(r'Chapter_(\d+)', txt_file.name)
+        if not match:
             continue
 
-        # 如果不是强制重建，检查是否已完成但需要重新合成
+        chapter_number = int(match.group(1))
+
+        # 检查是否需要处理该章节
         if not force_rebuild:
-            is_valid, message = verify_audiobook_generation(str(input_directory), txt_file_path, story_title)
-            if is_valid:
-                print(f"✅ ({i}/{len(txt_files)}) 校验通过: {final_mp3.name}")
-                processed_count += 1
+            if chapter_number not in unprocessed_chapters:
+                print(f"章节 {chapter_number} 已在数据库中标记为完成，跳过")
                 continue
-            elif "需要重新合成" in message:
-                print(f"🔄 ({i}/{len(txt_files)}) 检测到需要重新合成: {txt_file_path.name}")
-                print(f"   信息: {message}")
-                # 尝试重新合成
-                if check_and_rebuild_if_needed(str(input_directory), txt_file_path, config_path):
-                    print(f"✅ ({i}/{len(txt_files)}) 重新合成成功: {final_mp3.name}")
-                    if chapter_num > 0:
-                        db_manager.update_chapter_audio_status(story_title, chapter_num, 'completed')
-                    processed_count += 1
-                    continue
-                else:
-                    print(f"❌ ({i}/{len(txt_files)}) 重新合成失败: {txt_file_path.name}")
 
-        print(f"🔊 ({i}/{len(txt_files)}) 正在处理: {txt_file_path.name}")
+        print(f"开始处理章节: {txt_file.name}")
         try:
-            generate_audiobook(str(input_directory), str(txt_file_path), config_path,
-                               force_rebuild=force_rebuild, auto_update_rss=False)
-            # 验证生成结果
-            is_valid, message = verify_audiobook_generation(str(input_directory), txt_file_path, story_title)
-            if is_valid:
-                print(f"✅ ({i}/{len(txt_files)}) 成功生成: {final_mp3.name}")
-                processed_count += 1
-            else:
-                print(f"❌ ({i}/{len(txt_files)}) 生成验证失败: {txt_file_path.name}")
-                print(f"   错误: {message}")
-                failed_files.append(txt_file_path.name)
-                if chapter_num > 0:
-                    db_manager.update_chapter_audio_status(story_title, chapter_num, 'failed')
+            generate_audiobook(
+                str(directory_path),
+                str(txt_file),
+                config_path,
+                force_rebuild=force_rebuild,
+                auto_update_rss=False  # 批量处理时不自动更新RSS
+            )
+            # 更新数据库状态
+            db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+            print(f"✅ 章节 {chapter_number} 处理完成")
         except Exception as e:
-            print(f"❌ ({i}/{len(txt_files)}) 处理失败: {txt_file_path.name}")
-            print(f"   错误: {e}")
-            failed_files.append(txt_file_path.name)
-            if chapter_num > 0:
-                db_manager.update_chapter_audio_status(story_title, chapter_num, 'failed')
+            print(f"❌ 章节 {chapter_number} 处理失败: {e}")
+            # 更新数据库状态为失败
+            db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+            continue
 
-    print(f"\n" + "=" * 60)
-    print(f"✅ 批量处理完成: {input_directory}")
-    print(f"📊 总文件数: {len(txt_files)}")
-    print(f"🟢 成功: {processed_count}")
-    print(f"🔴 失败: {len(failed_files)}")
-    if failed_files:
-        print("📋 失败文件列表:")
-        for fname in failed_files:
-            print(f"  - {fname}")
-    print("=" * 60)
+    print("所有章节处理完成")
 
 
 if __name__ == "__main__":
