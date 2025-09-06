@@ -23,45 +23,7 @@ class DistributedController:
         hostname = socket.gethostname()
         return f"{hostname}_{mac}"
 
-    async def check_and_process_assigned_tasks(self):
-        """
-        检查分配给当前机器但未完成的任务并继续处理
-        """
-        print("🔍 检查分配给当前机器的未完成任务...")
-
-        # 检查分配给当前机器但未完成的故事
-        assigned_stories = self.get_assigned_stories()
-        for story in assigned_stories:
-            story_title = story['title']
-            print(f"  -> 检查未完成故事: {story_title}")
-
-            # 检查故事状态
-            if self.is_story_completed(story_title):
-                print(f"     故事 {story_title} 已完成，释放任务")
-                self.db_manager.release_story_from_machine(story_title, self.machine_id)
-                continue
-
-            # 继续处理未完成的故事
-            print(f"     继续处理未完成故事: {story_title}")
-            self.process_story(story)
-
-        # 检查分配给当前机器但未完成的章节
-        assigned_chapters = self.get_assigned_chapters()
-        for chapter in assigned_chapters:
-            story_title = chapter['story_title']
-            chapter_number = chapter['chapter_number']
-
-            # 检查章节状态
-            chapter_status = self.db_manager.get_chapter_audio_status(story_title, chapter_number)
-            if chapter_status == 'completed':
-                print(f"     章节 {story_title} 第{chapter_number}章已完成，释放任务")
-                self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
-                continue
-
-            # 继续处理未完成的章节
-            print(f"     继续处理未完成章节: {story_title} 第{chapter_number}章")
-            await self.process_chapter(story_title, chapter_number)
-
+    
     def get_assigned_stories(self):
         """
         获取分配给当前机器的故事
@@ -163,11 +125,10 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 处理故事 {story['title']} 时出错: {e}")
 
-    # 同时修改 process_chapter 方法中对 redownload_missing_chapters 的调用：
-
-    async def process_chapter(self, story_title, chapter_number):
+    def process_chapter(self, story_title, chapter_number):
         """
         处理分配给当前机器的章节
+        检查章节的下载、音频生成和RSS生成状态，并在未完成时继续处理
         """
         try:
             # 检查章节文件是否存在
@@ -176,43 +137,85 @@ class DistributedController:
             chapter_file = os.path.join(story_dir, f"Chapter_{chapter_number:04d}.txt")
             chapter_file = Path(chapter_file).as_posix()
 
-            # 如果章节文件不存在，尝试重新下载
-            if not os.path.exists(chapter_file):
-                print(f"⚠️ 章节文件不存在: {chapter_file}")
+            # 检查章节下载状态
+            chapter_info = self.db_manager.get_chapter_info(story_title, chapter_number)
+            if not chapter_info:
+                print(f"⚠️ 章节信息不存在: {story_title} 第{chapter_number}章")
+                return
+
+            # 检查下载状态
+            if chapter_info['download_status'] == 'failed' or not os.path.exists(chapter_file):
+                print(f"⚠️ 章节文件不存在或下载失败: {chapter_file}")
                 print(f"🔄 尝试重新下载章节 {chapter_number}...")
-
-                # 直接调用同步方法
-                result = await self.redownload_missing_chapters(story_title)
-
+                
+                # 同步调用重新下载方法
+                result = self.redownload_missing_chapters(story_title)
+                
                 # 重新检查文件是否存在
                 if result and os.path.exists(chapter_file):
                     print(f"✅ 章节 {chapter_number} 重新下载成功")
+                    # 更新下载状态为完成
+                    self.db_manager.update_chapter_download_status(story_title, chapter_number, 'completed')
                 else:
                     print(f"❌ 章节 {chapter_number} 重新下载失败或文件仍不存在")
+                    # 更新下载状态为失败
+                    self.db_manager.update_chapter_download_status(story_title, chapter_number, 'failed')
                     return
 
-            # 现在处理音频生成
-            if os.path.exists(chapter_file):
-                from audiobook_generator import generate_audiobook
-                generate_audiobook(
-                    story_dir,
-                    chapter_file,
-                    'config.yaml',
-                    force_rebuild=False,
-                    auto_update_rss=False
-                )
-
-                # 更新数据库状态
-                self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
-                print(f"✅ 章节 {story_title} 第{chapter_number}章处理完成")
-
-                # 释放任务
-                self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
-
-                # 检查是否需要更新RSS
-                self.check_and_update_rss(story_title)
+            # 检查音频生成状态
+            if chapter_info['audio_generation_status'] in ['pending', 'failed']:
+                print(f"🔊 开始{'重新' if chapter_info['audio_generation_status'] == 'failed' else ''}生成音频: {story_title} 第{chapter_number}章")
+                if os.path.exists(chapter_file):
+                    from audiobook_generator import generate_audiobook
+                    try:
+                        generate_audiobook(
+                            story_dir,
+                            chapter_file,
+                            'config.yaml',
+                            force_rebuild=(chapter_info['audio_generation_status'] == 'failed'),  # 如果是失败状态则强制重建
+                            auto_update_rss=False
+                        )
+                        
+                        # 更新数据库状态
+                        self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+                        print(f"✅ 章节 {story_title} 第{chapter_number}章音频生成完成")
+                    except Exception as e:
+                        print(f"❌ 章节 {story_title} 第{chapter_number}章音频生成失败: {e}")
+                        self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                        return
+                else:
+                    print(f"❌ 章节文件不存在，无法生成音频: {chapter_file}")
+                    self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                    return
             else:
-                print(f"❌ 章节文件不存在: {chapter_file}")
+                print(f"✅ 章节 {story_title} 第{chapter_number}章音频已生成")
+
+            # 检查RSS生成状态
+            if chapter_info['rss_status'] in ['pending', 'failed']:
+                print(f"📡 开始{'重新' if chapter_info['rss_status'] == 'failed' else ''}更新RSS: {story_title} 第{chapter_number}章")
+                try:
+                    story_dir = os.path.join(OUTPUT_DIR, story_title)
+                    from generate_and_deploy_rss import run_rss_update_process
+                    success = run_rss_update_process(story_dir)
+                    
+                    if success:
+                        # 更新数据库状态
+                        self.db_manager.update_chapter_rss_status(story_title, chapter_number, 'completed')
+                        print(f"✅ 章节 {story_title} 第{chapter_number}章RSS更新完成")
+                    else:
+                        print(f"❌ 章节 {story_title} 第{chapter_number}章RSS更新失败")
+                        self.db_manager.update_chapter_rss_status(story_title, chapter_number, 'failed')
+                        return
+                except Exception as e:
+                    print(f"❌ 章节 {story_title} 第{chapter_number}章RSS更新异常: {e}")
+                    self.db_manager.update_chapter_rss_status(story_title, chapter_number, 'failed')
+                    return
+            else:
+                print(f"✅ 章节 {story_title} 第{chapter_number}章RSS已更新")
+
+            # 释放任务
+            self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
+            print(f"✅ 章节 {story_title} 第{chapter_number}章处理完成")
 
         except Exception as e:
             print(f"❌ 处理章节 {story_title} 第{chapter_number}章时出错: {e}")
@@ -268,12 +271,62 @@ class DistributedController:
                             self.machine_id
                     ):
                         print(f"✅ 分配新章节: {chapter['story_title']} 第{chapter['chapter_number']}章")
-                        await self.process_chapter(chapter['story_title'], chapter['chapter_number'])
+                        # 同步处理章节
+                        self.process_chapter(chapter['story_title'], chapter['chapter_number'])
 
         except Exception as e:
             print(f"❌ 分配新任务时出错: {e}")
 
-    async def run(self):
+
+    def check_and_process_assigned_tasks(self):
+        """
+        检查分配给当前机器但未完成的任务并继续处理
+        """
+        print("🔍 检查分配给当前机器的未完成任务...")
+
+        # 检查分配给当前机器但未完成的故事
+        assigned_stories = self.get_assigned_stories()
+        for story in assigned_stories:
+            story_title = story['title']
+            print(f"  -> 检查未完成故事: {story_title}")
+
+            # 检查故事状态
+            if self.is_story_completed(story_title):
+                print(f"     故事 {story_title} 已完成，释放任务")
+                self.db_manager.release_story_from_machine(story_title, self.machine_id)
+                continue
+
+            # 继续处理未完成的故事
+            print(f"     继续处理未完成故事: {story_title}")
+            self.process_story(story)
+
+        # 检查分配给当前机器但未完成的章节（包括失败的章节）
+        assigned_chapters = self.get_assigned_chapters()
+        for chapter in assigned_chapters:
+            story_title = chapter['story_title']
+            chapter_number = chapter['chapter_number']
+
+            # 检查章节状态
+            chapter_status = self.db_manager.get_chapter_audio_status(story_title, chapter_number)
+            # 检查是否已完成所有处理
+            chapter_info = self.db_manager.get_chapter_info(story_title, chapter_number)
+            is_completed = (chapter_info and 
+                           chapter_info['download_status'] == 'completed' and
+                           chapter_info['audio_generation_status'] == 'completed' and
+                           chapter_info['rss_status'] == 'completed')
+            
+            if is_completed:
+                print(f"     章节 {story_title} 第{chapter_number}章已完成，释放任务")
+                self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
+                continue
+
+            # 继续处理未完成或失败的章节
+            status_text = "失败" if chapter_status == 'failed' else "未完成"
+            print(f"     继续处理{status_text}章节: {story_title} 第{chapter_number}章")
+            # 同步处理章节
+            self.process_chapter(story_title, chapter_number)
+
+    def run(self):
         """
         运行分布式控制器主循环
         """
@@ -288,20 +341,22 @@ class DistributedController:
                 print(f"\n🔄 执行任务检查周期...")
 
                 # 1. 首先检查并处理已分配但未完成的任务
-                await self.check_and_process_assigned_tasks()
+                self.check_and_process_assigned_tasks()
 
                 # 2. 然后分配新任务
-                await self.assign_new_tasks()
+                self.assign_new_tasks()
 
                 # 3. 更新机器心跳
                 self.db_manager.update_machine_heartbeat(self.machine_id)
 
                 print(f"⏳ 等待 {self.check_interval} 秒后进行下一次检查...")
-                await asyncio.sleep(self.check_interval)
+                import time
+                time.sleep(self.check_interval)
 
             except Exception as e:
                 print(f"❌ 执行任务检查时出错: {e}")
-                await asyncio.sleep(self.check_interval)
+                import time
+                time.sleep(self.check_interval)
 
     def register_machine(self):
         """
@@ -380,12 +435,13 @@ class DistributedController:
             # 获取章节链接 (需要在同步方法中运行异步函数)
             import asyncio
             try:
-
-                chapter_urls = await get_chapter_links(story_url, YOUR_WATTPAD_COOKIES)
-
+                # 创建事件循环运行异步函数
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                chapter_urls = loop.run_until_complete(get_chapter_links(story_url, YOUR_WATTPAD_COOKIES))
+                loop.close()
             except Exception as e:
                 print(f"❌ 获取章节链接时出错: {e}")
-
                 return False
 
             if not chapter_urls:
@@ -403,15 +459,17 @@ class DistributedController:
 
                     try:
                         # 运行异步下载函数
-                        success = await download_chapter_content(
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        success = loop.run_until_complete(download_chapter_content(
                                 chapter_url,
                                 chapter_num,
                                 story_dir,
                                 YOUR_WATTPAD_COOKIES,
                                 status,
                                 story_title
-                            )
-
+                            ))
+                        loop.close()
 
                         if success:
                             success_count += 1
@@ -422,8 +480,6 @@ class DistributedController:
                         print(f"❌ 下载章节 {chapter_num} 时出错: {e}")
                         import traceback
                         traceback.print_exc()
-                        if 'loop' in locals():
-                            loop.close()
                 else:
                     print(f"⚠️ 章节编号 {chapter_num} 超出范围")
 

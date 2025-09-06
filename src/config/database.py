@@ -378,6 +378,67 @@ class DatabaseManager:
             print(f"查询未处理RSS章节时出错: {e}")
             return []
 
+    def get_chapters_needing_processing(self, story_title: str) -> list:
+        """获取需要处理的章节列表（包括pending和failed状态的章节）"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 获取故事ID
+                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
+                story_row = cursor.fetchone()
+                if not story_row:
+                    return []
+
+                story_id = story_row['id']
+
+                # 获取需要处理的章节（pending或failed状态）
+                cursor.execute('''
+                    SELECT chapter_number, download_status, audio_generation_status, rss_status
+                    FROM chapters 
+                    WHERE story_id = %s 
+                    AND (download_status IN ('pending', 'failed') 
+                         OR audio_generation_status IN ('pending', 'failed')
+                         OR rss_status IN ('pending', 'failed'))
+                    ORDER BY chapter_number
+                ''', (story_id,))
+
+                chapters = cursor.fetchall()
+                return chapters
+        except Error as e:
+            print(f"查询需要处理的章节时出错: {e}")
+            return []
+
+    def get_chapters_with_failed_status(self, story_title: str) -> list:
+        """获取失败状态的章节列表"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 获取故事ID
+                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
+                story_row = cursor.fetchone()
+                if not story_row:
+                    return []
+
+                story_id = story_row['id']
+
+                # 获取失败状态的章节
+                cursor.execute('''
+                    SELECT chapter_number, download_status, audio_generation_status, rss_status
+                    FROM chapters 
+                    WHERE story_id = %s 
+                    AND (download_status = 'failed' 
+                         OR audio_generation_status = 'failed'
+                         OR rss_status = 'failed')
+                    ORDER BY chapter_number
+                ''', (story_id,))
+
+                chapters = cursor.fetchall()
+                return chapters
+        except Error as e:
+            print(f"查询失败状态的章节时出错: {e}")
+            return []
 
     # 在 DatabaseManager 类中添加以下方法
 
@@ -824,7 +885,34 @@ class DatabaseManager:
                 ''', (story_id, chapter_number))
 
                 row = cursor.fetchone()
-                return row[0] if row else 'pending'
+                return row[0]
         except Error as e:
             print(f"查询章节音频状态时出错: {e}")
             return 'pending'
+
+    def get_chapter_info(self, story_title: str, chapter_number: int) -> Optional[Dict[str, Any]]:
+        """获取章节详细信息"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 获取故事ID
+                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
+                story_row = cursor.fetchone()
+                if not story_row:
+                    return None
+
+                story_id = story_row['id']
+
+                cursor.execute('''
+                        SELECT download_status, audio_generation_status, rss_status 
+                        FROM chapters 
+                        WHERE story_id = %s AND chapter_number = %s
+                    ''', (story_id, chapter_number))
+
+                row = cursor.fetchone()
+                return row
+        except Error as e:
+            print(f"查询章节信息时出错: {e}")
+            return None
+
