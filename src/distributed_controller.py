@@ -164,6 +164,30 @@ class DistributedController:
 
             # 检查音频生成状态
             if chapter_info['audio_generation_status'] in ['pending', 'failed']:
+                # 如果状态为failed，检查MP3文件是否存在以及是否有效
+                if chapter_info['audio_generation_status'] == 'failed':
+                    # 检查最终MP3文件
+                    txt_filename = os.path.splitext(os.path.basename(chapter_file))[0]
+                    output_dir_name = f"{txt_filename}_audiobook_output"
+                    output_dir = os.path.join(story_dir, output_dir_name)
+                    final_mp3 = os.path.join(output_dir, "chapters", f"{txt_filename}_final.mp3")
+                    
+                    # 如果MP3文件存在，检查是否为有效的MP3文件
+                    if os.path.exists(final_mp3):
+                        try:
+                            # 尝试加载MP3文件以验证其有效性
+                            from pydub import AudioSegment
+                            audio = AudioSegment.from_mp3(final_mp3)
+                            print(f"✅ 检测到有效的MP3文件: {final_mp3}")
+                        except Exception as e:
+                            # MP3文件无效，删除它
+                            print(f"❌ 检测到无效的MP3文件: {final_mp3}，错误: {e}")
+                            try:
+                                os.remove(final_mp3)
+                                print(f"🗑️ 已删除无效的MP3文件: {final_mp3}")
+                            except Exception as delete_error:
+                                print(f"❌ 删除无效MP3文件失败: {delete_error}")
+                
                 print(f"🔊 开始{'重新' if chapter_info['audio_generation_status'] == 'failed' else ''}生成音频: {story_title} 第{chapter_number}章")
                 if os.path.exists(chapter_file):
                     from audiobook_generator import generate_audiobook
@@ -188,7 +212,78 @@ class DistributedController:
                     self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
                     return
             else:
-                print(f"✅ 章节 {story_title} 第{chapter_number}章音频已生成")
+                # 音频状态为completed，但需要检查实际文件是否存在和有效
+                print(f"✅ 章节 {story_title} 第{chapter_number}章音频已标记为生成完成，验证文件状态...")
+                txt_filename = os.path.splitext(os.path.basename(chapter_file))[0]
+                output_dir_name = f"{txt_filename}_audiobook_output"
+                output_dir = os.path.join(story_dir, output_dir_name)
+                final_mp3 = os.path.join(output_dir, "chapters", f"{txt_filename}_final.mp3")
+                
+                # 检查最终MP3文件是否存在
+                if not os.path.exists(final_mp3):
+                    print(f"❌ 检测到音频文件缺失: {final_mp3}，重新生成...")
+                    # 文件不存在，重新生成
+                    if os.path.exists(chapter_file):
+                        from audiobook_generator import generate_audiobook
+                        try:
+                            # 强制重建，因为文件缺失
+                            generate_audiobook(
+                                story_dir,
+                                chapter_file,
+                                'config.yaml',
+                                force_rebuild=True,
+                                auto_update_rss=False
+                            )
+                            
+                            # 更新数据库状态
+                            self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+                            print(f"✅ 章节 {story_title} 第{chapter_number}章音频重新生成完成")
+                        except Exception as e:
+                            print(f"❌ 章节 {story_title} 第{chapter_number}章音频重新生成失败: {e}")
+                            self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                            return
+                    else:
+                        print(f"❌ 章节文件不存在，无法生成音频: {chapter_file}")
+                        self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                        return
+                else:
+                    # 文件存在，检查是否为有效的MP3文件
+                    try:
+                        from pydub import AudioSegment
+                        audio = AudioSegment.from_mp3(final_mp3)
+                        print(f"✅ 检测到有效的MP3文件: {final_mp3}")
+                    except Exception as e:
+                        # MP3文件无效，删除它并重新生成
+                        print(f"❌ 检测到无效的MP3文件: {final_mp3}，错误: {e}")
+                        try:
+                            os.remove(final_mp3)
+                            print(f"🗑️ 已删除无效的MP3文件: {final_mp3}")
+                        except Exception as delete_error:
+                            print(f"❌ 删除无效MP3文件失败: {delete_error}")
+                        
+                        # 重新生成音频
+                        if os.path.exists(chapter_file):
+                            from audiobook_generator import generate_audiobook
+                            try:
+                                generate_audiobook(
+                                    story_dir,
+                                    chapter_file,
+                                    'config.yaml',
+                                    force_rebuild=True,  # 强制重建
+                                    auto_update_rss=False
+                                )
+                                
+                                # 更新数据库状态
+                                self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+                                print(f"✅ 章节 {story_title} 第{chapter_number}章音频重新生成完成")
+                            except Exception as e:
+                                print(f"❌ 章节 {story_title} 第{chapter_number}章音频重新生成失败: {e}")
+                                self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                                return
+                        else:
+                            print(f"❌ 章节文件不存在，无法生成音频: {chapter_file}")
+                            self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                            return
 
             # 检查RSS生成状态
             if chapter_info['rss_status'] in ['pending', 'failed']:
