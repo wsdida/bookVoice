@@ -17,11 +17,9 @@ class DistributedController:
 
     def get_machine_id(self):
         """获取机器唯一标识"""
-        import uuid
         import socket
-        mac = uuid.getnode()
         hostname = socket.gethostname()
-        return f"{hostname}_{mac}"
+        return f"{hostname}"
 
     
     def get_assigned_stories(self):
@@ -372,7 +370,6 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 分配新任务时出错: {e}")
 
-
     def check_and_process_assigned_tasks(self):
         """
         检查分配给当前机器但未完成的任务并继续处理
@@ -490,10 +487,7 @@ class DistributedController:
             print(f"❌ 机器注册失败: {e}")
             return False
 
-
-
-
-    async def redownload_missing_chapters(self, story_title):
+    def redownload_missing_chapters(self, story_title):
         """
         重新下载缺失的章节文件 (同步版本)
         """
@@ -527,14 +521,9 @@ class DistributedController:
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
             from wattpad_downloader import get_chapter_links, download_chapter_content, load_status
 
-            # 获取章节链接 (需要在同步方法中运行异步函数)
-            import asyncio
+            # 获取章节链接
             try:
-                # 创建事件循环运行异步函数
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                chapter_urls = loop.run_until_complete(get_chapter_links(story_url, YOUR_WATTPAD_COOKIES))
-                loop.close()
+                chapter_urls = get_chapter_links(story_url, YOUR_WATTPAD_COOKIES)
             except Exception as e:
                 print(f"❌ 获取章节链接时出错: {e}")
                 return False
@@ -553,18 +542,14 @@ class DistributedController:
                     print(f"📥 重新下载章节 {chapter_num}...")
 
                     try:
-                        # 运行异步下载函数
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        success = loop.run_until_complete(download_chapter_content(
+                        success = download_chapter_content(
                                 chapter_url,
                                 chapter_num,
                                 story_dir,
                                 YOUR_WATTPAD_COOKIES,
                                 status,
                                 story_title
-                            ))
-                        loop.close()
+                            )
 
                         if success:
                             success_count += 1

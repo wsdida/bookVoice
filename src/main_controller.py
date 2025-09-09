@@ -22,7 +22,7 @@ class MainController:
         if self.controller:
             self.controller.is_running = False
 
-    async def run(self):
+    def run(self):
         """运行主控制器"""
         print("=== BookVoice 分布式自动化处理系统 ===")
 
@@ -42,7 +42,7 @@ class MainController:
 
         try:
             # 运行分布式控制器
-            await self.controller.run()
+            self.controller.run()
         except Exception as e:
             print(f"❌ 主控制器运行时出错: {e}")
         finally:
@@ -50,11 +50,11 @@ class MainController:
             print("🔚 主控制器已停止")
 
 
-async def main():
+def main():
     """主函数"""
     controller = MainController()
-    await controller.run()
+    controller.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
