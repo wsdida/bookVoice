@@ -190,100 +190,6 @@ def check_chapter_audio_exists(novel_dir, chapter_subdir_name):
     return False, None
 
 
-# 在 generate_and_deploy_rss.py 文件末尾添加以下函数
-
-def check_and_synthesize_missing_audio(input_directory, config_path='config.yaml'):
-    """
-    检查并合成缺失的音频文件
-    """
-    try:
-        # 遍历所有章节输出目录
-        chapter_dirs = list(Path(input_directory).glob("Chapter_*_audiobook_output"))
-
-        for chapter_dir in chapter_dirs:
-            print(f"检查章节目录: {chapter_dir.name}")
-
-            # 检查最终MP3文件是否存在
-            txt_file = list(chapter_dir.parent.glob(f"{chapter_dir.name.replace('_audiobook_output', '')}.txt"))
-            if txt_file:
-                txt_filename = txt_file[0].stem
-                final_mp3 = chapter_dir / "chapters" / f"{txt_filename}_final.mp3"
-
-                if not final_mp3.exists():
-                    print(f"  -> 缺失最终MP3文件: {final_mp3}")
-
-                    # 检查日志文件
-                    log_file = chapter_dir / "logs" / "audiobook.log"
-                    if log_file.exists():
-                        # 检查日志中是否显示生成完成
-                        with open(log_file, 'r', encoding='utf-8') as f:
-                            log_content = f.read()
-
-                        if "✅ === 有声书生成完成" in log_content:
-                            print(f"  -> 日志显示已完成但缺少MP3文件，重新合成: {chapter_dir.name}")
-                            # 重新生成该章节
-                            try:
-                                from audiobook_generator import generate_audiobook
-                                generate_audiobook(str(chapter_dir.parent), str(txt_file[0]), config_path,
-                                                   force_rebuild=True)
-                                print(f"  -> 重新合成完成: {chapter_dir.name}")
-                            except Exception as e:
-                                print(f"  -> 重新合成失败: {e}")
-                        else:
-                            print(f"  -> 日志显示未完成生成: {chapter_dir.name}")
-                    else:
-                        print(f"  -> 缺少日志文件: {log_file}")
-                else:
-                    print(f"  -> 最终MP3文件已存在: {final_mp3}")
-
-    except Exception as e:
-        print(f"检查和合成过程中出错: {e}")
-
-
-def verify_audio_files_integrity(input_directory):
-    """
-    验证音频文件的完整性
-    """
-    try:
-        chapter_dirs = list(Path(input_directory).glob("Chapter_*_audiobook_output"))
-
-        for chapter_dir in chapter_dirs:
-            print(f"验证章节目录: {chapter_dir.name}")
-
-            # 检查日志文件
-            log_file = chapter_dir / "logs" / "audiobook.log"
-            if not log_file.exists():
-                print(f"  -> 缺少日志文件: {log_file}")
-                continue
-
-            # 读取日志内容
-            with open(log_file, 'r', encoding='utf-8') as f:
-                log_lines = f.readlines()
-
-            # 查找混音完成记录
-            mix_completed = any("✅ 混音完成" in line for line in log_lines)
-            generation_completed = any("✅ === 有声书生成完成" in line for line in log_lines)
-
-            print(f"  -> 混音完成: {mix_completed}")
-            print(f"  -> 生成完成: {generation_completed}")
-
-            # 检查最终MP3文件
-            txt_file = list(chapter_dir.parent.glob(f"{chapter_dir.name.replace('_audiobook_output', '')}.txt"))
-            if txt_file:
-                txt_filename = txt_file[0].stem
-                final_mp3 = chapter_dir / "chapters" / f"{txt_filename}_final.mp3"
-                if final_mp3.exists():
-                    file_size = final_mp3.stat().st_size
-                    print(f"  -> 最终MP3文件大小: {file_size} 字节")
-                    if file_size == 0:
-                        print(f"  -> 最终MP3文件为空，需要重新生成")
-                else:
-                    print(f"  -> 最终MP3文件不存在")
-
-    except Exception as e:
-        print(f"验证音频文件完整性时出错: {e}")
-
-
 def check_rss_consistency(input_directory, config_path='rss_config.yaml'):
     """
     检查RSS文件与实际音频文件的一致性
@@ -343,36 +249,7 @@ def check_rss_consistency(input_directory, config_path='rss_config.yaml'):
         return True  # 出错时默认需要更新
 
 
-def comprehensive_check_and_update(input_directory, config_path='config.yaml', rss_config_path='rss_config.yaml'):
-    """
-    综合检查并更新音频文件和RSS
-    """
-    print("=== 开始综合检查 ===")
 
-    # 1. 检查并合成缺失的音频文件
-    print("\n1. 检查并合成缺失的音频文件...")
-    check_and_synthesize_missing_audio(input_directory, config_path)
-
-    # 2. 验证音频文件完整性
-    print("\n2. 验证音频文件完整性...")
-    verify_audio_files_integrity(input_directory)
-
-    # 3. 检查RSS一致性
-    print("\n3. 检查RSS一致性...")
-    need_rss_update = check_rss_consistency(input_directory, rss_config_path)
-
-    # 4. 如果需要，更新RSS
-    if need_rss_update:
-        print("\n4. 更新RSS文件...")
-        try:
-            run_rss_update_process(input_directory)
-            print("✅ RSS更新完成")
-        except Exception as e:
-            print(f"❌ RSS更新失败: {e}")
-    else:
-        print("\n4. RSS文件已是最新，无需更新")
-
-    print("\n=== 综合检查完成 ===")
 
 
 def load_config(config_path='rss_config.yaml'):

@@ -52,6 +52,146 @@ def load_config(config_path='config.yaml'):
     except Exception as e:
         print(f"配置文件加载失败: {str(e)}")
         raise
+# 在 audiobook_generator.py 中添加以下导入
+from pydub.exceptions import CouldntDecodeError
+
+def check_mp3_file_validity(mp3_file_path):
+    """
+    检查MP3文件是否有效可播放
+    """
+    try:
+        if not os.path.exists(mp3_file_path) or os.path.getsize(mp3_file_path) == 0:
+            return False
+        # 尝试加载音频文件来验证其有效性
+        audio = AudioSegment.from_mp3(mp3_file_path)
+        return True
+    except (CouldntDecodeError, Exception) as e:
+        print(f"  -> MP3文件无效或无法播放: {mp3_file_path}, 错误: {e}")
+        return False
+
+def mix_audio(annotations, output_dir, effect_dir, role_to_speaker=None, force_rebuild=False):
+    try:
+        print("开始音效混音")
+        chapter_audio_dir = os.path.join(output_dir, 'chapters')
+        os.makedirs(chapter_audio_dir, exist_ok=True)
+
+        # 如果role_to_speaker未提供，创建默认映射
+        if role_to_speaker is None:
+            role_to_speaker = {"Narrator": "default"}
+
+        for chapter_key, anno_list in annotations.items():
+            # 确保使用正确的章节编号格式
+            # 如果chapter_key是"chapter_01"这样的格式，直接使用
+            # 否则需要提取数字并格式化
+            if chapter_key.startswith('chapter_'):
+                chapter_formatted = chapter_key
+            else:
+                # 尝试从chapter_key中提取数字
+                match = re.search(r'(\d+)', chapter_key)
+                if match:
+                    chapter_number = int(match.group(1))
+                    chapter_formatted = f'chapter_{chapter_number:02d}'
+                else:
+                    chapter_formatted = chapter_key
+
+            final_output_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_final.mp3')
+
+            # 检查最终MP3文件是否存在且有效
+            if os.path.exists(final_output_file) and not force_rebuild:
+                if check_mp3_file_validity(final_output_file):
+                    print(f"✅ 跳过已存在的有效最终音频: {final_output_file}")
+                    continue
+                else:
+                    print(f"🗑️ 删除无效的最终音频文件: {final_output_file}")
+                    try:
+                        os.remove(final_output_file)
+                    except Exception as e:
+                        print(f"⚠️ 删除无效文件失败: {e}")
+
+            if force_rebuild and os.path.exists(final_output_file):
+                try:
+                    os.remove(final_output_file)
+                    print(f"🗑️ 已删除旧最终音频: {final_output_file}")
+                except OSError as e:
+                    print(f"⚠️ 删除最终音频失败 {final_output_file}: {e}")
+
+            print(f"混音章节: {chapter_formatted}")
+
+            # 首先检查是否已存在wav文件，如果存在则直接使用
+            existing_wav_files = find_existing_wav_files(chapter_audio_dir, chapter_formatted)
+            if existing_wav_files :
+                print(f"  -> 发现 {len(existing_wav_files)} 个已存在的wav文件，直接使用")
+                chapter_audio = AudioSegment.silent(duration=0)
+
+                for wav_file in existing_wav_files:
+                    if os.path.exists(wav_file) and os.path.getsize(wav_file) > 0:
+                        try:
+                            audio = AudioSegment.from_wav(wav_file)
+                            chapter_audio += audio + AudioSegment.silent(duration=200)
+                            print(f"  -> 已添加: {os.path.basename(wav_file)}")
+                        except Exception as e:
+                            print(f"  -> 加载音频失败 {wav_file}: {str(e)}")
+                            continue
+                    else:
+                        print(f"  -> 跳过无效文件: {wav_file}")
+            else:
+                # 如果没有现有wav文件，则按原有逻辑生成
+                print(f"  -> 未发现现有wav文件，按原有逻辑生成")
+                chapter_audio = AudioSegment.silent(duration=0)
+
+                for i, anno in enumerate(anno_list):
+                    # 保持现有格式：使用实际的speaker名称作为角色名
+                    role = anno.get('speaker', 'Narrator')
+                    speaker = role_to_speaker.get(role, role_to_speaker.get("Narrator", "default"))
+                    safe_speaker_name = re.sub(r'[\\/:*?"<>|]', '_', speaker)
+                    audio_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_{safe_speaker_name}_{i:03d}.wav')
+                    if not os.path.exists(audio_file):
+                        print(f"❌ 音频文件不存在，跳过: {audio_file}")
+                        continue
+                    try:
+                        audio = AudioSegment.from_wav(audio_file)
+                        chapter_audio += audio + AudioSegment.silent(duration=200)
+                    except Exception as e:
+                        print(f"加载音频失败 {audio_file}: {str(e)}")
+                        continue
+
+            if len(chapter_audio) == 0:
+                print(f"⚠️ 章节 {chapter_formatted} 无有效音频数据，跳过导出")
+                continue
+
+            bg_added = False
+            effect_file = os.path.join(effect_dir, 'background.wav')
+            if not os.path.exists(effect_file):
+                for fallback in ['forest.wav', 'ambient.wav', 'music.wav']:
+                    fallback_file = os.path.join(effect_dir, fallback)
+                    if os.path.exists(fallback_file):
+                        effect_file = fallback_file
+                        break
+            if os.path.exists(effect_file):
+                try:
+                    bg_audio = AudioSegment.from_wav(effect_file) - 15
+                    chapter_audio = chapter_audio.overlay(bg_audio, loop=True)
+                    bg_added = True
+                except Exception as e:
+                    print(f"加载背景音效失败 {effect_file}: {str(e)}")
+
+            if not bg_added:
+                print("🟡 未添加背景音效")
+
+            try:
+                chapter_audio.export(final_output_file, format='mp3', bitrate='192k')
+                # 验证生成的文件是否有效
+                if check_mp3_file_validity(final_output_file):
+                    print(f"✅ 混音完成: {final_output_file}")
+                else:
+                    print(f"❌ 生成的MP3文件无效: {final_output_file}")
+            except Exception as e:
+                print(f"❌ 导出音频失败 {final_output_file}: {str(e)}")
+
+        print("✅ 音效混音完成")
+    except Exception as e:
+        print(f"❌ 音效混音过程出错: {str(e)}")
+        raise
 
 
 def normalize_text(text):
@@ -329,118 +469,6 @@ def find_existing_wav_files(chapter_audio_dir, chapter_formatted):
     return wav_files
 
 
-def mix_audio(annotations, output_dir, effect_dir, role_to_speaker=None, force_rebuild=False):
-    try:
-        print("开始音效混音")
-        chapter_audio_dir = os.path.join(output_dir, 'chapters')
-        os.makedirs(chapter_audio_dir, exist_ok=True)
-
-        # 如果role_to_speaker未提供，创建默认映射
-        if role_to_speaker is None:
-            role_to_speaker = {"Narrator": "default"}
-
-        for chapter_key, anno_list in annotations.items():
-            # 确保使用正确的章节编号格式
-            # 如果chapter_key是"chapter_01"这样的格式，直接使用
-            # 否则需要提取数字并格式化
-            if chapter_key.startswith('chapter_'):
-                chapter_formatted = chapter_key
-            else:
-                # 尝试从chapter_key中提取数字
-                match = re.search(r'(\d+)', chapter_key)
-                if match:
-                    chapter_number = int(match.group(1))
-                    chapter_formatted = f'chapter_{chapter_number:02d}'
-                else:
-                    chapter_formatted = chapter_key
-
-            final_output_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_final.mp3')
-
-            if os.path.exists(final_output_file) and not force_rebuild:
-                if os.path.getsize(final_output_file) > 0:
-                    print(f"✅ 跳过已存在的最终音频: {final_output_file}")
-                    continue
-
-            if force_rebuild and os.path.exists(final_output_file):
-                try:
-                    os.remove(final_output_file)
-                    print(f"🗑️ 已删除旧最终音频: {final_output_file}")
-                except OSError as e:
-                    print(f"⚠️ 删除最终音频失败 {final_output_file}: {e}")
-
-            print(f"混音章节: {chapter_formatted}")
-
-            # 首先检查是否已存在wav文件，如果存在则直接使用
-            existing_wav_files = find_existing_wav_files(chapter_audio_dir, chapter_formatted)
-            if existing_wav_files :
-                print(f"  -> 发现 {len(existing_wav_files)} 个已存在的wav文件，直接使用")
-                chapter_audio = AudioSegment.silent(duration=0)
-
-                for wav_file in existing_wav_files:
-                    if os.path.exists(wav_file) and os.path.getsize(wav_file) > 0:
-                        try:
-                            audio = AudioSegment.from_wav(wav_file)
-                            chapter_audio += audio + AudioSegment.silent(duration=200)
-                            print(f"  -> 已添加: {os.path.basename(wav_file)}")
-                        except Exception as e:
-                            print(f"  -> 加载音频失败 {wav_file}: {str(e)}")
-                            continue
-                    else:
-                        print(f"  -> 跳过无效文件: {wav_file}")
-            else:
-                # 如果没有现有wav文件，则按原有逻辑生成
-                print(f"  -> 未发现现有wav文件，按原有逻辑生成")
-                chapter_audio = AudioSegment.silent(duration=0)
-
-                for i, anno in enumerate(anno_list):
-                    # 保持现有格式：使用实际的speaker名称作为角色名
-                    role = anno.get('speaker', 'Narrator')
-                    speaker = role_to_speaker.get(role, role_to_speaker.get("Narrator", "default"))
-                    safe_speaker_name = re.sub(r'[\\/:*?"<>|]', '_', speaker)
-                    audio_file = os.path.join(chapter_audio_dir, f'{chapter_formatted}_{safe_speaker_name}_{i:03d}.wav')
-                    if not os.path.exists(audio_file):
-                        print(f"❌ 音频文件不存在，跳过: {audio_file}")
-                        continue
-                    try:
-                        audio = AudioSegment.from_wav(audio_file)
-                        chapter_audio += audio + AudioSegment.silent(duration=200)
-                    except Exception as e:
-                        print(f"加载音频失败 {audio_file}: {str(e)}")
-                        continue
-
-            if len(chapter_audio) == 0:
-                print(f"⚠️ 章节 {chapter_formatted} 无有效音频数据，跳过导出")
-                continue
-
-            bg_added = False
-            effect_file = os.path.join(effect_dir, 'background.wav')
-            if not os.path.exists(effect_file):
-                for fallback in ['forest.wav', 'ambient.wav', 'music.wav']:
-                    fallback_file = os.path.join(effect_dir, fallback)
-                    if os.path.exists(fallback_file):
-                        effect_file = fallback_file
-                        break
-            if os.path.exists(effect_file):
-                try:
-                    bg_audio = AudioSegment.from_wav(effect_file) - 15
-                    chapter_audio = chapter_audio.overlay(bg_audio, loop=True)
-                    bg_added = True
-                except Exception as e:
-                    print(f"加载背景音效失败 {effect_file}: {str(e)}")
-
-            if not bg_added:
-                print("🟡 未添加背景音效")
-
-            try:
-                chapter_audio.export(final_output_file, format='mp3', bitrate='192k')
-                print(f"✅ 混音完成: {final_output_file}")
-            except Exception as e:
-                print(f"❌ 导出音频失败 {final_output_file}: {str(e)}")
-
-        print("✅ 音效混音完成")
-    except Exception as e:
-        print(f"❌ 音效混音过程出错: {str(e)}")
-        raise
 
 
 def get_chapter_status(output_dir, chapter_num):

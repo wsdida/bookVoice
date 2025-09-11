@@ -10,7 +10,7 @@ from config.database import DatabaseManager
 db_manager = DatabaseManager()
 
 
-def check_and_rebuild_if_needed(input_directory, txt_file_path, config_path='config.yaml'):
+def check_and_rebuild_if_needed(input_directory, txt_file_path,story_title,chapter_number, config_path='config.yaml'):
     """
     检查并重新构建（如果需要）
     """
@@ -69,6 +69,7 @@ def check_and_rebuild_if_needed(input_directory, txt_file_path, config_path='con
                     from audiobook_generator import mix_audio
                     mix_audio(annotations, str(output_dir), config.get('effect_dir', 'effects'), force_rebuild=True)
                     print(f"  -> 重新混音完成")
+                    db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
                     return True
                 else:
                     print(f"  -> 未找到注解文件，无法重新混音")
@@ -84,6 +85,61 @@ def check_and_rebuild_if_needed(input_directory, txt_file_path, config_path='con
     except Exception as e:
         print(f"  -> 检查和重建过程中出错: {e}")
         return False
+
+
+def _validate_and_rebuild_mp3_if_needed(story_title, directory_path):
+    """
+    校验已存在的MP3文件是否可以播放，如果不能播放则使用WAV文件重新合成
+    """
+    try:
+        # 获取所有txt文件（章节文件）
+        txt_files = list(directory_path.glob("Chapter_*.txt"))
+        txt_files.sort(key=lambda x: int(re.search(r'Chapter_(\d+)', x.name).group(1))
+        if re.search(r'Chapter_(\d+)', x.name) else 0)
+
+        if not txt_files:
+            print(f"在目录 {directory_path} 中未找到章节文件")
+            return
+
+        print(f"找到 {len(txt_files)} 个章节文件")
+
+        for txt_file in txt_files:
+            match = re.search(r'Chapter_(\d+)', txt_file.name)
+            if not match:
+                continue
+
+            chapter_number = int(match.group(1))
+
+            # 检查是否需要处理该章节
+            if  check_and_rebuild_if_needed(directory_path, txt_file,story_title,chapter_number):
+                print(f"章节 {chapter_number} 已在数据库中标记为完成，跳过")
+                continue
+
+            print(f"开始处理章节: {txt_file.name}")
+            try:
+                generate_audiobook(
+                    str(directory_path),
+                    str(txt_file),
+                    config_path,
+                    force_rebuild=force_rebuild,
+                    auto_update_rss=False  # 批量处理时不自动更新RSS
+                )
+                # 更新数据库状态
+                db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+                print(f"✅ 章节 {chapter_number} 处理完成")
+            except Exception as e:
+                print(f"❌ 章节 {chapter_number} 处理失败: {e}")
+                # 更新数据库状态为失败
+                db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                continue
+
+        print("所有章节处理完成")
+
+    except Exception as e:
+        print(f"  -> 校验和重建过程中出错: {e}")
+
+
+# 在 batch_audiobook_generator.py 中修改 verify_audiobook_generation 函数
 
 def verify_audiobook_generation(input_directory, txt_file_path, story_title):
     """
@@ -116,6 +172,13 @@ def verify_audiobook_generation(input_directory, txt_file_path, story_title):
             return False, "最终MP3文件不存在，需要重新合成"
         elif final_mp3.stat().st_size == 0:
             return False, "最终MP3文件为空"
+        else:
+            # 检查MP3文件是否可播放
+            try:
+                from pydub import AudioSegment
+                audio = AudioSegment.from_mp3(str(final_mp3))
+            except Exception as e:
+                return False, f"最终MP3文件无法播放: {e}"
 
         # 更新数据库状态
         # 从文件名提取章节号
@@ -127,6 +190,7 @@ def verify_audiobook_generation(input_directory, txt_file_path, story_title):
         return True, "验证通过"
     except Exception as e:
         return False, f"验证过程中出错: {e}"
+
 
 
 def generate_audiobooks_in_directory(directory_path, config_path='config.yaml', force_rebuild=False):
@@ -154,6 +218,8 @@ def generate_audiobooks_in_directory(directory_path, config_path='config.yaml', 
     # 获取数据库中未处理的音频章节
     if not force_rebuild:
         unprocessed_chapters = db_manager.get_unprocessed_audio_chapters(story_title)
+        # 校验已存在的MP3文件是否可以播放，如果不能播放则使用WAV文件重新合成
+        _validate_and_rebuild_mp3_if_needed(story_title, directory_path)
         if not unprocessed_chapters:
             print("数据库中所有章节均已处理完成")
             return
@@ -192,6 +258,7 @@ def generate_audiobooks_in_directory(directory_path, config_path='config.yaml', 
             continue
 
     print("所有章节处理完成")
+
 
 
 if __name__ == "__main__":

@@ -58,6 +58,8 @@ class DatabaseManager:
                         total_chapters INT DEFAULT 0,
                         downloaded_chapters INT DEFAULT 0,
                         status VARCHAR(50) DEFAULT 'pending',
+                        machine_id VARCHAR(255) NULL,
+                        assigned_at TIMESTAMP NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -75,6 +77,8 @@ class DatabaseManager:
                         audio_generation_status VARCHAR(50) DEFAULT 'pending',
                         rss_status VARCHAR(50) DEFAULT 'pending',
                         word_count INT DEFAULT 0,
+                        machine_id VARCHAR(255) NULL,
+                        assigned_at TIMESTAMP NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         UNIQUE KEY unique_chapter (story_id, chapter_number),
@@ -94,6 +98,21 @@ class DatabaseManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                ''')
+
+                # 创建机器表
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS machines (
+                        id VARCHAR(255) PRIMARY KEY,
+                        hostname VARCHAR(255),
+                        ip_address VARCHAR(45),
+                        cpu_count INT,
+                        memory_gb FLOAT,
+                        gpu_info TEXT,
+                        status VARCHAR(50) DEFAULT 'active',
+                        last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 ''')
 
@@ -141,20 +160,33 @@ class DatabaseManager:
             print(f"查询故事信息时出错: {e}")
             return None
 
-    def create_or_update_story(self, title: str, url: str = None, total_chapters: int = 0):
+    def create_or_update_story(self, title: str, url: str = None, total_chapters: int = 0, machine_id: str = None):
         """创建或更新故事信息"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO stories 
-                    (title, url, total_chapters, updated_at) 
-                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
-                    ON DUPLICATE KEY UPDATE
-                    url = VALUES(url),
-                    total_chapters = VALUES(total_chapters),
-                    updated_at = CURRENT_TIMESTAMP
-                ''', (title, url, total_chapters))
+                if machine_id:
+                    cursor.execute('''
+                        INSERT INTO stories 
+                        (title, url, total_chapters, machine_id, assigned_at, updated_at) 
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON DUPLICATE KEY UPDATE
+                        url = VALUES(url),
+                        total_chapters = VALUES(total_chapters),
+                        machine_id = COALESCE(machine_id, VALUES(machine_id)),
+                        assigned_at = COALESCE(assigned_at, VALUES(assigned_at)),
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (title, url, total_chapters, machine_id))
+                else:
+                    cursor.execute('''
+                        INSERT INTO stories 
+                        (title, url, total_chapters, updated_at) 
+                        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                        ON DUPLICATE KEY UPDATE
+                        url = VALUES(url),
+                        total_chapters = VALUES(total_chapters),
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (title, url, total_chapters))
                 conn.commit()
         except Error as e:
             print(f"创建或更新故事时出错: {e}")
@@ -185,7 +217,7 @@ class DatabaseManager:
             raise
 
     def create_or_update_chapter(self, story_title: str, chapter_number: int,
-                                 title: str = None, file_path: str = None):
+                                 title: str = None, file_path: str = None, machine_id: str = None):
         """创建或更新章节信息"""
         try:
             with self.get_connection() as conn:
@@ -200,15 +232,28 @@ class DatabaseManager:
                 story_id = story_row[0]
 
                 # 插入或更新章节
-                cursor.execute('''
-                    INSERT INTO chapters 
-                    (story_id, chapter_number, title, file_path, updated_at)
-                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    ON DUPLICATE KEY UPDATE
-                    title = VALUES(title),
-                    file_path = VALUES(file_path),
-                    updated_at = CURRENT_TIMESTAMP
-                ''', (story_id, chapter_number, title, file_path))
+                if machine_id:
+                    cursor.execute('''
+                        INSERT INTO chapters 
+                        (story_id, chapter_number, title, file_path, machine_id, assigned_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON DUPLICATE KEY UPDATE
+                        title = VALUES(title),
+                        file_path = VALUES(file_path),
+                        machine_id = COALESCE(machine_id, VALUES(machine_id)),
+                        assigned_at = COALESCE(assigned_at, VALUES(assigned_at)),
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (story_id, chapter_number, title, file_path, machine_id))
+                else:
+                    cursor.execute('''
+                        INSERT INTO chapters 
+                        (story_id, chapter_number, title, file_path, updated_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON DUPLICATE KEY UPDATE
+                        title = VALUES(title),
+                        file_path = VALUES(file_path),
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (story_id, chapter_number, title, file_path))
 
                 conn.commit()
         except Error as e:
@@ -440,162 +485,28 @@ class DatabaseManager:
             print(f"查询失败状态的章节时出错: {e}")
             return []
 
-    # 在 DatabaseManager 类中添加以下方法
-
-    def assign_story_to_machine(self, story_title: str, machine_id: str):
-        """将故事分配给特定机器"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE stories 
-                    SET machine_id = %s, assigned_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                    WHERE title = %s AND (machine_id IS NULL OR machine_id = %s)
-                ''', (machine_id, story_title, machine_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Error as e:
-            print(f"分配故事给机器时出错: {e}")
-            return False
-
-
-    def assign_chapter_to_machine(self, story_title: str, chapter_number: int, machine_id: str):
-        """将章节分配给特定机器"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-
-                # 获取故事ID
-                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
-                story_row = cursor.fetchone()
-                if not story_row:
-                    return False
-
-                story_id = story_row[0]
-
-                cursor.execute('''
-                    UPDATE chapters
-                    SET machine_id = %s, assigned_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                    WHERE story_id = %s AND chapter_number = %s AND (machine_id IS NULL OR machine_id = %s)
-                ''', (machine_id, story_id, chapter_number, machine_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Error as e:
-            print(f"分配章节给机器时出错: {e}")
-            return False
-
-
-    def get_unassigned_stories(self):
-        """获取未分配给任何机器的故事"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute('''
-                    SELECT title, url FROM stories 
-                    WHERE status IN ('pending', 'partial') 
-                    AND machine_id IS NULL
-                    ORDER BY created_at
-                ''')
-                stories = cursor.fetchall()
-                return stories
-        except Error as e:
-            print(f"查询未分配故事时出错: {e}")
-            return []
-
-
-    def get_unassigned_audio_chapters(self):
-        """获取未分配给任何机器且有待处理音频的章节"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute('''
-                    SELECT s.title as story_title, c.chapter_number, c.title
-                    FROM chapters c
-                    JOIN stories s ON c.story_id = s.id
-                    WHERE c.audio_generation_status = 'pending'
-                    AND c.machine_id IS NULL
-                    ORDER BY s.created_at, c.chapter_number
-                ''')
-                chapters = cursor.fetchall()
-                return chapters
-        except Error as e:
-            print(f"查询未分配音频章节时出错: {e}")
-            return []
-
-
-    def register_machine(self, machine_id: str, hostname: str = None, ip_address: str = None,
-                         cpu_count: int = None, memory_gb: float = None, gpu_info: str = None):
-        """注册或更新机器信息"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO machines 
-                    (id, hostname, ip_address, cpu_count, memory_gb, gpu_info, last_heartbeat)
-                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    ON DUPLICATE KEY UPDATE
-                    hostname = VALUES(hostname),
-                    ip_address = VALUES(ip_address),
-                    cpu_count = VALUES(cpu_count),
-                    memory_gb = VALUES(memory_gb),
-                    gpu_info = VALUES(gpu_info),
-                    last_heartbeat = CURRENT_TIMESTAMP
-                ''', (machine_id, hostname, ip_address, cpu_count, memory_gb, gpu_info))
-                conn.commit()
-        except Error as e:
-            print(f"注册机器时出错: {e}")
-            raise
-
-
-    def update_machine_heartbeat(self, machine_id: str):
-        """更新机器心跳"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE machines 
-                    SET last_heartbeat = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                ''', (machine_id,))
-                conn.commit()
-        except Error as e:
-            print(f"更新机器心跳时出错: {e}")
-            raise
-
-
-    def get_active_machines(self, minutes: int = 5):
-        """获取活跃机器列表（最近几分钟内有心跳）"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute('''
-                    SELECT * FROM machines 
-                    WHERE status = 'active' 
-                    AND last_heartbeat > DATE_SUB(NOW(), INTERVAL %s MINUTE)
-                ''', (minutes,))
-                machines = cursor.fetchall()
-                return machines
-        except Error as e:
-            print(f"查询活跃机器时出错: {e}")
-            return []
-
-
     def release_story_from_machine(self, story_title: str, machine_id: str):
         """从机器释放故事（当处理完成或失败时）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # 不再删除机器分配信息，而是保留它
+                # 只更新故事状态，保留 machine_id 信息
                 cursor.execute('''
                     UPDATE stories 
-                    SET machine_id = NULL, assigned_at = NULL
+                    SET status = 'completed'
                     WHERE title = %s AND machine_id = %s
                 ''', (story_title, machine_id))
                 conn.commit()
-                return cursor.rowcount > 0
+                if cursor.rowcount > 0:
+                    print(f"✅ 故事 '{story_title}' 已标记为完成，保留机器分配信息")
+                    return True
+                else:
+                    print(f"⚠️  故事 '{story_title}' 未从机器 {machine_id} 释放（可能未被该机器占用）")
+                    return False
         except Error as e:
-            print(f"从机器释放故事时出错: {e}")
+            print(f"❌ 从机器 {machine_id} 更新故事 '{story_title}' 状态时出错: {e}")
             return False
-
 
     def release_chapter_from_machine(self, story_title: str, chapter_number: int, machine_id: str):
         """从机器释放章节（当处理完成或失败时）"""
@@ -607,23 +518,28 @@ class DatabaseManager:
                 cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
                 story_row = cursor.fetchone()
                 if not story_row:
+                    print(f"⚠️  未找到故事 '{story_title}'")
                     return False
 
                 story_id = story_row[0]
 
+                # 不再删除机器分配信息，而是保留它
+                # 只更新章节状态，保留 machine_id 信息
                 cursor.execute('''
                     UPDATE chapters
-                    SET machine_id = NULL, assigned_at = NULL
+                    SET audio_generation_status = 'completed'
                     WHERE story_id = %s AND chapter_number = %s AND machine_id = %s
                 ''', (story_id, chapter_number, machine_id))
                 conn.commit()
-                return cursor.rowcount > 0
+                if cursor.rowcount > 0:
+                    print(f"✅ 章节 {chapter_number} of '{story_title}' 已标记为完成，保留机器分配信息")
+                    return True
+                else:
+                    print(f"⚠️  章节 {chapter_number} of '{story_title}' 未从机器 {machine_id} 释放（可能未被该机器占用）")
+                    return False
         except Error as e:
-            print(f"从机器释放章节时出错: {e}")
+            print(f"❌ 从机器 {machine_id} 更新章节 {chapter_number} of '{story_title}' 状态时出错: {e}")
             return False
-
-
-    # 在 database.py 的 DatabaseManager 类中添加以下方法
 
     def register_machine(self, machine_id: str, hostname: str = None, ip_address: str = None,
                          cpu_count: int = None, memory_gb: float = None, gpu_info: str = None):
@@ -649,7 +565,6 @@ class DatabaseManager:
             print(f"❌ 注册机器 {machine_id} 时出错: {e}")
             raise
 
-
     def update_machine_heartbeat(self, machine_id: str):
         """更新机器心跳"""
         try:
@@ -666,7 +581,6 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ 更新机器 {machine_id} 心跳时出错: {e}")
             raise
-
 
     def get_active_machines(self, minutes: int = 5):
         """获取活跃机器列表（最近几分钟内有心跳）"""
@@ -685,7 +599,6 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ 查询活跃机器时出错: {e}")
             return []
-
 
     def assign_story_to_machine(self, story_title: str, machine_id: str):
         """将故事分配给特定机器"""
@@ -708,7 +621,6 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ 分配故事 '{story_title}' 给机器 {machine_id} 时出错: {e}")
             return False
-
 
     def assign_chapter_to_machine(self, story_title: str, chapter_number: int, machine_id: str):
         """将章节分配给特定机器"""
@@ -742,7 +654,6 @@ class DatabaseManager:
             print(f"❌ 分配章节 {chapter_number} of '{story_title}' 给机器 {machine_id} 时出错: {e}")
             return False
 
-
     def get_unassigned_stories(self):
         """获取未分配给任何机器的故事"""
         try:
@@ -760,7 +671,6 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ 查询未分配故事时出错: {e}")
             return []
-
 
     def get_unassigned_audio_chapters(self):
         """获取未分配给任何机器且有待处理音频的章节"""
@@ -782,61 +692,6 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ 查询未分配音频章节时出错: {e}")
             return []
-
-
-    def release_story_from_machine(self, story_title: str, machine_id: str):
-        """从机器释放故事（当处理完成或失败时）"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE stories 
-                    SET machine_id = NULL, assigned_at = NULL
-                    WHERE title = %s AND machine_id = %s
-                ''', (story_title, machine_id))
-                conn.commit()
-                if cursor.rowcount > 0:
-                    print(f"✅ 故事 '{story_title}' 已从机器 {machine_id} 释放")
-                    return True
-                else:
-                    print(f"⚠️  故事 '{story_title}' 未从机器 {machine_id} 释放（可能未被该机器占用）")
-                    return False
-        except Error as e:
-            print(f"❌ 从机器 {machine_id} 释放故事 '{story_title}' 时出错: {e}")
-            return False
-
-
-    def release_chapter_from_machine(self, story_title: str, chapter_number: int, machine_id: str):
-        """从机器释放章节（当处理完成或失败时）"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-
-                # 获取故事ID
-                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
-                story_row = cursor.fetchone()
-                if not story_row:
-                    print(f"⚠️  未找到故事 '{story_title}'")
-                    return False
-
-                story_id = story_row[0]
-
-                cursor.execute('''
-                    UPDATE chapters
-                    SET machine_id = NULL, assigned_at = NULL
-                    WHERE story_id = %s AND chapter_number = %s AND machine_id = %s
-                ''', (story_id, chapter_number, machine_id))
-                conn.commit()
-                if cursor.rowcount > 0:
-                    print(f"✅ 章节 {chapter_number} of '{story_title}' 已从机器 {machine_id} 释放")
-                    return True
-                else:
-                    print(f"⚠️  章节 {chapter_number} of '{story_title}' 未从机器 {machine_id} 释放（可能未被该机器占用）")
-                    return False
-        except Error as e:
-            print(f"❌ 从机器 {machine_id} 释放章节 {chapter_number} of '{story_title}' 时出错: {e}")
-            return False
-
 
     def get_machine_workload(self, machine_id: str):
         """获取机器当前工作负载"""
@@ -865,30 +720,7 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ 获取机器 {machine_id} 工作负载时出错: {e}")
             return {'stories': 0, 'chapters': 0}
-    def get_chapter_audio_status(self, story_title: str, chapter_number: int) -> str:
-        """获取特定章节的音频生成状态"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
 
-                # 获取故事ID
-                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
-                story_row = cursor.fetchone()
-                if not story_row:
-                    return 'pending'
-
-                story_id = story_row[0]
-
-                cursor.execute('''
-                    SELECT audio_generation_status FROM chapters 
-                    WHERE story_id = %s AND chapter_number = %s
-                ''', (story_id, chapter_number))
-
-                row = cursor.fetchone()
-                return row[0]
-        except Error as e:
-            print(f"查询章节音频状态时出错: {e}")
-            return 'pending'
 
     def get_chapter_info(self, story_title: str, chapter_number: int) -> Optional[Dict[str, Any]]:
         """获取章节详细信息"""
@@ -915,4 +747,57 @@ class DatabaseManager:
         except Error as e:
             print(f"查询章节信息时出错: {e}")
             return None
+
+    def get_all_chapters_info(self, story_title: str) -> list:
+        """获取故事的所有章节信息"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 获取故事ID
+                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
+                story_row = cursor.fetchone()
+                if not story_row:
+                    return []
+
+                story_id = story_row['id']
+
+                cursor.execute('''
+                        SELECT chapter_number, download_status, audio_generation_status, rss_status 
+                        FROM chapters 
+                        WHERE story_id = %s
+                        ORDER BY chapter_number
+                    ''', (story_id,))
+
+                rows = cursor.fetchall()
+                return rows
+        except Error as e:
+            print(f"查询章节信息时出错: {e}")
+            return []
+    def get_chapters_info_machine_id_story_title(self, story_title: str) -> list:
+        """获取故事的所有章节信息"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+
+                # 获取故事ID
+                cursor.execute('SELECT id FROM stories WHERE title = %s', (story_title,))
+                story_row = cursor.fetchone()
+                if not story_row:
+                    return []
+
+                story_id = story_row['id']
+
+                cursor.execute('''
+                        SELECT chapter_number,file_path, download_status, audio_generation_status, rss_status 
+                        FROM chapters 
+                        WHERE story_id = %s 
+                        ORDER BY chapter_number
+                    ''', (story_id,))
+
+                rows = cursor.fetchall()
+                return rows
+        except Error as e:
+            print(f"查询章节信息时出错: {e}")
+            return []
 

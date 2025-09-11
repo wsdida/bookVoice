@@ -24,14 +24,14 @@ class DistributedController:
     
     def get_assigned_stories(self):
         """
-        获取分配给当前机器的故事
+        获取分配给当前机器的故事（排除已完成的故事）
         """
         try:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
                 cursor.execute('''
                     SELECT title, url FROM stories 
-                    WHERE machine_id = %s AND status IN ('pending', 'partial', 'downloading')
+                    WHERE machine_id = %s AND status IN ('pending','partial', 'downloading')
                 ''', (self.machine_id,))
                 return cursor.fetchall()
         except Exception as e:
@@ -42,7 +42,7 @@ class DistributedController:
 
     def get_assigned_chapters(self):
         """
-        获取分配给当前机器的章节
+        获取分配给当前机器的章节（排除已完成的章节）
         """
         try:
             with self.db_manager.get_connection() as conn:
@@ -51,7 +51,11 @@ class DistributedController:
                     SELECT s.title as story_title, c.chapter_number, c.title
                     FROM chapters c
                     JOIN stories s ON c.story_id = s.id
-                    WHERE c.machine_id = %s AND c.audio_generation_status IN ('pending', 'failed')
+                    WHERE c.machine_id = %s AND (
+                        c.audio_generation_status IN ('pending', 'failed') OR
+                        c.download_status IN ('pending', 'failed') OR
+                        c.rss_status IN ('pending', 'failed')
+                    )
                 ''', (self.machine_id,))
                 return cursor.fetchall()
         except Exception as e:
@@ -115,13 +119,15 @@ class DistributedController:
 
             if result:
                 print(f"✅ 故事 {story['title']} 处理完成")
-                # 释放任务
-                self.db_manager.release_story_from_machine(story['title'], self.machine_id)
+                # 不再释放任务，保留机器分配信息
+                # self.db_manager.release_story_from_machine(story['title'], self.machine_id)
             else:
                 print(f"⚠️ 故事 {story['title']} 处理失败")
 
         except Exception as e:
             print(f"❌ 处理故事 {story['title']} 时出错: {e}")
+
+    # 在 distributed_controller.py 的 process_chapter 方法中添加对MP3文件有效性的检查
 
     def process_chapter(self, story_title, chapter_number):
         """
@@ -145,10 +151,10 @@ class DistributedController:
             if chapter_info['download_status'] == 'failed' or not os.path.exists(chapter_file):
                 print(f"⚠️ 章节文件不存在或下载失败: {chapter_file}")
                 print(f"🔄 尝试重新下载章节 {chapter_number}...")
-                
+
                 # 同步调用重新下载方法
                 result = self.redownload_missing_chapters(story_title)
-                
+
                 # 重新检查文件是否存在
                 if result and os.path.exists(chapter_file):
                     print(f"✅ 章节 {chapter_number} 重新下载成功")
@@ -169,7 +175,7 @@ class DistributedController:
                     output_dir_name = f"{txt_filename}_audiobook_output"
                     output_dir = os.path.join(story_dir, output_dir_name)
                     final_mp3 = os.path.join(output_dir, "chapters", f"{txt_filename}_final.mp3")
-                    
+
                     # 如果MP3文件存在，检查是否为有效的MP3文件
                     if os.path.exists(final_mp3):
                         try:
@@ -185,8 +191,9 @@ class DistributedController:
                                 print(f"🗑️ 已删除无效的MP3文件: {final_mp3}")
                             except Exception as delete_error:
                                 print(f"❌ 删除无效MP3文件失败: {delete_error}")
-                
-                print(f"🔊 开始{'重新' if chapter_info['audio_generation_status'] == 'failed' else ''}生成音频: {story_title} 第{chapter_number}章")
+
+                print(
+                    f"🔊 开始{'重新' if chapter_info['audio_generation_status'] == 'failed' else ''}生成音频: {story_title} 第{chapter_number}章")
                 if os.path.exists(chapter_file):
                     from audiobook_generator import generate_audiobook
                     try:
@@ -197,7 +204,7 @@ class DistributedController:
                             force_rebuild=(chapter_info['audio_generation_status'] == 'failed'),  # 如果是失败状态则强制重建
                             auto_update_rss=False
                         )
-                        
+
                         # 更新数据库状态
                         self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
                         print(f"✅ 章节 {story_title} 第{chapter_number}章音频生成完成")
@@ -216,7 +223,7 @@ class DistributedController:
                 output_dir_name = f"{txt_filename}_audiobook_output"
                 output_dir = os.path.join(story_dir, output_dir_name)
                 final_mp3 = os.path.join(output_dir, "chapters", f"{txt_filename}_final.mp3")
-                
+
                 # 检查最终MP3文件是否存在
                 if not os.path.exists(final_mp3):
                     print(f"❌ 检测到音频文件缺失: {final_mp3}，重新生成...")
@@ -232,7 +239,7 @@ class DistributedController:
                                 force_rebuild=True,
                                 auto_update_rss=False
                             )
-                            
+
                             # 更新数据库状态
                             self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
                             print(f"✅ 章节 {story_title} 第{chapter_number}章音频重新生成完成")
@@ -258,7 +265,7 @@ class DistributedController:
                             print(f"🗑️ 已删除无效的MP3文件: {final_mp3}")
                         except Exception as delete_error:
                             print(f"❌ 删除无效MP3文件失败: {delete_error}")
-                        
+
                         # 重新生成音频
                         if os.path.exists(chapter_file):
                             from audiobook_generator import generate_audiobook
@@ -270,7 +277,7 @@ class DistributedController:
                                     force_rebuild=True,  # 强制重建
                                     auto_update_rss=False
                                 )
-                                
+
                                 # 更新数据库状态
                                 self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
                                 print(f"✅ 章节 {story_title} 第{chapter_number}章音频重新生成完成")
@@ -285,12 +292,13 @@ class DistributedController:
 
             # 检查RSS生成状态
             if chapter_info['rss_status'] in ['pending', 'failed']:
-                print(f"📡 开始{'重新' if chapter_info['rss_status'] == 'failed' else ''}更新RSS: {story_title} 第{chapter_number}章")
+                print(
+                    f"📡 开始{'重新' if chapter_info['rss_status'] == 'failed' else ''}更新RSS: {story_title} 第{chapter_number}章")
                 try:
                     story_dir = os.path.join(OUTPUT_DIR, story_title)
                     from generate_and_deploy_rss import run_rss_update_process
                     success = run_rss_update_process(story_dir)
-                    
+
                     if success:
                         # 更新数据库状态
                         self.db_manager.update_chapter_rss_status(story_title, chapter_number, 'completed')
@@ -306,8 +314,8 @@ class DistributedController:
             else:
                 print(f"✅ 章节 {story_title} 第{chapter_number}章RSS已更新")
 
-            # 释放任务
-            self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
+            # 不再释放任务，保留机器分配信息
+            # self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
             print(f"✅ 章节 {story_title} 第{chapter_number}章处理完成")
 
         except Exception as e:
@@ -317,6 +325,177 @@ class DistributedController:
                 self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
             except Exception as db_error:
                 print(f"❌ 更新数据库状态时出错: {db_error}")
+
+    def check_chapter_consistency(self, story_title, chapter_number):
+        """
+        检查数据库状态与实际文件的一致性
+        1. 检查数据库章节与实际文件是否对应
+        2. 检查语音生成与章节是否对应
+        3. 检查RSS文件生成内容与语音生成章节是否对应
+        """
+        print(f"🔍 检查章节一致性: {story_title} 第{chapter_number}章")
+        
+        # 1. 检查数据库章节与实际文件是否对应
+        story_dir = os.path.join(OUTPUT_DIR, story_title)
+        chapter_file = os.path.join(story_dir, f"Chapter_{chapter_number:04d}.txt")
+        
+        # 获取数据库中的章节信息
+        chapter_info = self.db_manager.get_chapter_info(story_title, chapter_number)
+        if not chapter_info:
+            print(f"❌ 数据库中不存在章节信息: {story_title} 第{chapter_number}章")
+            return False
+            
+        # 检查下载状态与实际文件
+        if chapter_info['download_status'] == 'completed':
+            if not os.path.exists(chapter_file):
+                print(f"❌ 数据库标记为已完成但文件不存在: {chapter_file}")
+                # 更新数据库状态
+                self.db_manager.update_chapter_download_status(story_title, chapter_number, 'failed')
+                return False
+            else:
+                print(f"✅ 下载状态一致性检查通过")
+        else:
+            print(f"⚠️ 下载状态未完成: {chapter_info['download_status']}")
+            
+        # 2. 检查语音生成与章节是否对应
+        if chapter_info['audio_generation_status'] == 'completed':
+            txt_filename = os.path.splitext(os.path.basename(chapter_file))[0]
+            output_dir_name = f"{txt_filename}_audiobook_output"
+            output_dir = os.path.join(story_dir, output_dir_name)
+            
+            # 使用check_and_rebuild_if_needed函数检查并重建音频（如果需要）
+            try:
+                from batch_audiobook_generator import check_and_rebuild_if_needed
+                rebuild_result = check_and_rebuild_if_needed(
+                    story_dir, 
+                    Path(chapter_file), 
+                    story_title, 
+                    chapter_number, 
+                    'config.yaml'
+                )
+                
+                if not rebuild_result:
+                    print(f"❌ 音频文件检查或重建失败: {story_title} 第{chapter_number}章")
+                    # 更新数据库状态
+                    self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                    return False
+                else:
+                    print(f"✅ 音频生成一致性检查通过")
+            except Exception as e:
+                print(f"❌ 调用check_and_rebuild_if_needed时出错: {e}")
+                # 更新数据库状态
+                self.db_manager.update_chapter_audio_status(story_title, chapter_number, 'failed')
+                return False
+        else:
+            print(f"⚠️ 音频生成状态未完成: {chapter_info['audio_generation_status']}")
+
+        # 3. 检查RSS文件生成内容与语音生成章节是否对应
+        if chapter_info['rss_status'] == 'completed':
+            # 检查RSS文件中是否包含该章节
+            rss_file = os.path.join(story_dir, "generated_podcast_rss.xml")
+            if os.path.exists(rss_file):
+                try:
+                    import xml.etree.ElementTree as ET
+                    tree = ET.parse(rss_file)
+                    root = tree.getroot()
+                    
+                    # 查找RSS中是否包含该章节
+                    found = False
+                    for item in root.findall(".//item"):
+                        title_elem = item.find("title")
+                        if title_elem is not None and f"Chapter {chapter_number:02d}" in title_elem.text:
+                            found = True
+                            break
+                            
+                    if found:
+                        print(f"✅ RSS生成一致性检查通过")
+                    else:
+                        print(f"❌ RSS文件中未找到章节条目: Chapter {chapter_number:02d}")
+                        # 这里不更新数据库状态，因为RSS是整体更新的
+                        return False
+                except Exception as e:
+                    print(f"❌ 解析RSS文件时出错: {e}")
+                    return False
+            else:
+                print(f"❌ RSS文件不存在: {rss_file}")
+                return False
+        else:
+            print(f"⚠️ RSS生成状态未完成: {chapter_info['rss_status']}")
+            
+        return True
+
+    def check_and_process_assigned_tasks(self):
+        """
+        检查分配给当前机器但未完成的任务并继续处理
+        """
+        print("🔍 检查分配给当前机器的未完成任务...")
+
+        # 检查分配给当前机器但未完成的故事
+        assigned_stories = self.get_assigned_stories()
+        for story in assigned_stories:
+            story_title = story['title']
+            print(f"  -> 检查未完成故事: {story_title}")
+
+            # 检查故事状态
+            if self.is_story_completed(story_title):
+                print(f"     故事 {story_title} 已完成，保留机器分配信息")
+                # 不再释放任务，保留机器分配信息
+                # self.db_manager.release_story_from_machine(story_title, self.machine_id)
+                continue
+
+            # 继续处理未完成的故事
+            print(f"     继续处理未完成故事: {story_title}")
+            self.process_story(story)
+
+        # 检查分配给当前机器但未完成的章节（包括失败的章节）
+        assigned_chapters = self.get_assigned_chapters()
+        for chapter in assigned_chapters:
+            story_title = chapter['story_title']
+            chapter_number = chapter['chapter_number']
+
+            # 首先检查一致性
+            is_consistent = self.check_chapter_consistency(story_title, chapter_number)
+            
+            # 检查章节状态
+            chapter_status = self.db_manager.get_chapter_info(story_title, chapter_number)
+            # 检查是否已完成所有处理
+            chapter_info = self.db_manager.get_chapter_info(story_title, chapter_number)
+            is_completed = (chapter_info and 
+                           chapter_info['download_status'] == 'completed' and
+                           chapter_info['audio_generation_status'] == 'completed' and
+                           chapter_info['rss_status'] == 'completed')
+            
+            if is_completed and is_consistent:
+                print(f"     章节 {story_title} 第{chapter_number}章已完成且一致，保留机器分配信息")
+                # 不再释放任务，保留机器分配信息
+                # self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
+                continue
+
+            # 继续处理未完成或失败的章节
+            status_text = "失败" if chapter_status == 'failed' else "未完成"
+            print(f"     继续处理{status_text}章节: {story_title} 第{chapter_number}章")
+            # 同步处理章节
+            self.process_chapter(story_title, chapter_number)
+
+    def perform_comprehensive_check(self):
+        """
+        执行全面检查，确保数据库状态与实际文件一致
+        """
+        print("🔍 执行全面一致性检查...")
+        
+        # 获取所有分配给当前机器的故事
+        assigned_stories = self.get_assigned_stories()
+        for story in assigned_stories:
+            story_title = story['title']
+            print(f"  -> 检查故事: {story_title}")
+            
+            # 获取故事的所有章节信息
+            all_chapters = self.db_manager.get_all_chapters_info(story_title)
+            for chapter_info in all_chapters:
+                chapter_number = chapter_info['chapter_number']
+                self.check_chapter_consistency(story_title, chapter_number)
+                
+        print("✅ 全面一致性检查完成")
 
     def check_and_update_rss(self, story_title):
         """
@@ -335,7 +514,7 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 更新RSS时出错: {e}")
 
-    async def assign_new_tasks(self):
+    def assign_new_tasks(self):
         """
         分配新任务给当前机器
         """
@@ -370,54 +549,6 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 分配新任务时出错: {e}")
 
-    def check_and_process_assigned_tasks(self):
-        """
-        检查分配给当前机器但未完成的任务并继续处理
-        """
-        print("🔍 检查分配给当前机器的未完成任务...")
-
-        # 检查分配给当前机器但未完成的故事
-        assigned_stories = self.get_assigned_stories()
-        for story in assigned_stories:
-            story_title = story['title']
-            print(f"  -> 检查未完成故事: {story_title}")
-
-            # 检查故事状态
-            if self.is_story_completed(story_title):
-                print(f"     故事 {story_title} 已完成，释放任务")
-                self.db_manager.release_story_from_machine(story_title, self.machine_id)
-                continue
-
-            # 继续处理未完成的故事
-            print(f"     继续处理未完成故事: {story_title}")
-            self.process_story(story)
-
-        # 检查分配给当前机器但未完成的章节（包括失败的章节）
-        assigned_chapters = self.get_assigned_chapters()
-        for chapter in assigned_chapters:
-            story_title = chapter['story_title']
-            chapter_number = chapter['chapter_number']
-
-            # 检查章节状态
-            chapter_status = self.db_manager.get_chapter_audio_status(story_title, chapter_number)
-            # 检查是否已完成所有处理
-            chapter_info = self.db_manager.get_chapter_info(story_title, chapter_number)
-            is_completed = (chapter_info and 
-                           chapter_info['download_status'] == 'completed' and
-                           chapter_info['audio_generation_status'] == 'completed' and
-                           chapter_info['rss_status'] == 'completed')
-            
-            if is_completed:
-                print(f"     章节 {story_title} 第{chapter_number}章已完成，释放任务")
-                self.db_manager.release_chapter_from_machine(story_title, chapter_number, self.machine_id)
-                continue
-
-            # 继续处理未完成或失败的章节
-            status_text = "失败" if chapter_status == 'failed' else "未完成"
-            print(f"     继续处理{status_text}章节: {story_title} 第{chapter_number}章")
-            # 同步处理章节
-            self.process_chapter(story_title, chapter_number)
-
     def run(self):
         """
         运行分布式控制器主循环
@@ -427,6 +558,10 @@ class DistributedController:
 
         # 注册机器
         self.register_machine()
+        
+        # 添加计数器用于定期执行全面检查
+        comprehensive_check_interval = 10  # 每10个周期执行一次全面检查
+        cycle_count = 0
 
         while self.is_running:
             try:
@@ -434,11 +569,17 @@ class DistributedController:
 
                 # 1. 首先检查并处理已分配但未完成的任务
                 self.check_and_process_assigned_tasks()
-
+                
                 # 2. 然后分配新任务
                 self.assign_new_tasks()
+                
+                # 3. 定期执行全面检查
+                cycle_count += 1
+                if cycle_count >= comprehensive_check_interval:
+                    self.perform_comprehensive_check()
+                    cycle_count = 0
 
-                # 3. 更新机器心跳
+                # 4. 更新机器心跳
                 self.db_manager.update_machine_heartbeat(self.machine_id)
 
                 print(f"⏳ 等待 {self.check_interval} 秒后进行下一次检查...")
@@ -473,6 +614,7 @@ class DistributedController:
             except:
                 pass
 
+            # 注册机器到数据库
             self.db_manager.register_machine(
                 self.machine_id,
                 hostname,
@@ -481,6 +623,10 @@ class DistributedController:
                 memory_gb,
                 gpu_info
             )
+            
+            # 确保机器心跳是最新的
+            self.db_manager.update_machine_heartbeat(self.machine_id)
+            
             print(f"✅ 机器注册成功: {self.machine_id}")
             return True
         except Exception as e:

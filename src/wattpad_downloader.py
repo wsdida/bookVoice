@@ -223,13 +223,13 @@ async def download_single_page(page_url: str, headers: dict, page_index: int) ->
 
 
 async def download_chapter_content(chapter_url: str, chapter_index: int, output_dir: str, cookies_str: str,
-                                   status: dict, story_title: str):
+                                   status: dict, story_title: str, machine_id: str = None):
     """下载单个章节（支持断点续传）"""
     filename = f"Chapter_{chapter_index:04d}.txt"
     filepath = os.path.join(output_dir, filename)
 
     # 检查数据库中的状态
-    db_manager.create_or_update_chapter(story_title, chapter_index, file_path=filepath)
+    db_manager.create_or_update_chapter(story_title, chapter_index, file_path=filepath, machine_id=machine_id)
 
     # 检查是否已成功下载
     if chapter_index in status["completed_chapters"]:
@@ -332,11 +332,6 @@ async def retry_failed_chapters(output_dir, chapter_urls, cookies_str, status):
                     pass
 
 
-# --- 主下载函数 ---
-# 在 wattpad_downloader.py 中确保故事 URL 被正确保存到数据库
-
-# 更新 download_single_story 函数中的这部分代码
-
 async def download_single_story(story_info: dict, cookies_str: str, base_output_dir: str, machine_id: str = None):
     story_url = story_info["url"].strip()
     story_title = story_info["title"].strip()
@@ -356,7 +351,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
     status["total_chapters"] = len(chapter_urls)
 
     # 更新数据库中的故事信息，确保 URL 被保存
-    db_manager.create_or_update_story(story_title, story_url, len(chapter_urls))
+    db_manager.create_or_update_story(story_title, story_url, len(chapter_urls), machine_id)
 
     # 如果提供了机器ID，更新分配信息
     if machine_id:
@@ -375,16 +370,16 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
             for chapter_num in undownloaded_chapters:
                 if 1 <= chapter_num <= len(chapter_urls):
                     url = chapter_urls[chapter_num - 1]
-                    await download_chapter_content(url, chapter_num, story_output_dir, cookies_str, status, story_title)
+                    await download_chapter_content(url, chapter_num, story_output_dir, cookies_str, status, story_title, machine_id)
         else:
             # 全量下载
             for i, url in enumerate(chapter_urls, 1):
                 if i in status["completed_chapters"]:
                     continue
-                await download_chapter_content(url, i, story_output_dir, cookies_str, status, story_title)
+                await download_chapter_content(url, i, story_output_dir, cookies_str, status, story_title, machine_id)
 
         # 重试失败
-        await retry_failed_chapters(story_output_dir, chapter_urls, cookies_str, status)
+        await retry_failed_chapters(output_dir, chapter_urls, cookies_str, status)
 
         # 检查并重新下载缺失的章节
         print("检查缺失章节...")
