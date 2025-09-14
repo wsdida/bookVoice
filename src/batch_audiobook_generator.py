@@ -34,53 +34,55 @@ def check_and_rebuild_if_needed(input_directory, txt_file_path,story_title,chapt
             return False
 
         # 检查最终MP3文件
-        final_mp3 = output_dir / "chapters" / f"{txt_filename}_final.mp3"
-        if not final_mp3.exists() or final_mp3.stat().st_size == 0:
-            print(f"  -> 最终MP3文件缺失或为空，重新合成: {final_mp3}")
+        final_mp3 =glob.glob((output_dir / "chapters" / f"*_final.mp3").as_posix())
+        for mp3 in final_mp3:
 
-            # 重新导入并调用混音函数
-            try:
-                # 延迟导入避免循环依赖
-                from audiobook_generator import mix_audio, load_config
+            if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
+                print(f"  -> 最终MP3文件缺失或为空，重新合成: {mp3}")
 
-                # 加载配置
-                config = load_config(config_path)
-                config['input_file'] = str(txt_file_path)
-                config['output_dir'] = str(output_dir)
+                # 重新导入并调用混音函数
+                try:
+                    # 延迟导入避免循环依赖
+                    from audiobook_generator import mix_audio, load_config
 
-                # 尝试重新混音
-                # 需要读取annotations文件来重新混音
-                annotations_dir = output_dir / "annotations"
-                annotations = {}
+                    # 加载配置
+                    config = load_config(config_path)
+                    config['input_file'] = str(txt_file_path)
+                    config['output_dir'] = str(output_dir)
 
-                # 读取所有章节的注解文件
-                for anno_file in annotations_dir.glob("chapter_*.json"):
-                    chapter_num = anno_file.stem
-                    try:
-                        import json
-                        with open(anno_file, 'r', encoding='utf-8') as f:
-                            annotations[chapter_num] = json.load(f)
-                    except Exception as e:
-                        print(f"  -> 读取注解文件失败 {anno_file}: {e}")
-                        continue
+                    # 尝试重新混音
+                    # 需要读取annotations文件来重新混音
+                    annotations_dir = output_dir / "annotations"
+                    annotations = {}
 
-                if annotations:
-                    # 重新混音
-                    from audiobook_generator import mix_audio
-                    mix_audio(annotations, str(output_dir), config.get('effect_dir', 'effects'), force_rebuild=True)
-                    print(f"  -> 重新混音完成")
-                    db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
-                    return True
-                else:
-                    print(f"  -> 未找到注解文件，无法重新混音")
+                    # 读取所有章节的注解文件
+                    for anno_file in annotations_dir.glob("chapter_*.json"):
+                        chapter_num = anno_file.stem
+                        try:
+                            import json
+                            with open(anno_file, 'r', encoding='utf-8') as f:
+                                annotations[chapter_num] = json.load(f)
+                        except Exception as e:
+                            print(f"  -> 读取注解文件失败 {anno_file}: {e}")
+                            continue
+
+                    if annotations:
+                        # 重新混音
+                        from audiobook_generator import mix_audio
+                        mix_audio(annotations, str(output_dir), config.get('effect_dir', 'effects'), force_rebuild=True)
+                        print(f"  -> 重新混音完成")
+                        db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
+                        return True
+                    else:
+                        print(f"  -> 未找到注解文件，无法重新混音")
+                        return False
+
+                except Exception as e:
+                    print(f"  -> 重新混音失败: {e}")
                     return False
-
-            except Exception as e:
-                print(f"  -> 重新混音失败: {e}")
-                return False
-        else:
-            print(f"  -> 最终MP3文件已存在且有效: {final_mp3}")
-            return True
+            else:
+                print(f"  -> 最终MP3文件已存在且有效: {mp3}")
+                return True
 
     except Exception as e:
         print(f"  -> 检查和重建过程中出错: {e}")
