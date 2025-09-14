@@ -140,9 +140,6 @@ def _validate_and_rebuild_mp3_if_needed(story_title, directory_path):
     except Exception as e:
         print(f"  -> 校验和重建过程中出错: {e}")
 
-
-# 在 batch_audiobook_generator.py 中修改 verify_audiobook_generation 函数
-
 def verify_audiobook_generation(input_directory, txt_file_path, story_title):
     """
     验证有声书生成结果

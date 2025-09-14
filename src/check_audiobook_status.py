@@ -1,6 +1,10 @@
 
 from config.database import DatabaseManager
 import os
+from pathlib import Path
+import glob
+from generate_and_deploy_rss import  check_rss_consistency
+
 local_rss_file_name="/generate_podcast_rss.xml"
 remote_rss_file_name="podcast.xml"
 
@@ -25,13 +29,39 @@ class CheckAudioBookStatus:
             print(f"❌ 获取章节信息时出错: {e}")
 
 
+    def chess_audio_update(self):
+        chapters_error = []
+        if not self.chapters:
+            print(f"❌ 故事 {self.story_title} 没有任何章节")
+        else:
+            for chapter in self.chapters:
+                print(f"✅ 找到故事 {self.story_title} 的章节 {chapter['chapter_number']}")
+                file_path=chapter['file_path'].as_posix()
+                text_file_name=file_path.stem
+                output_dir_name=f"{text_file_name}_audiobook_output"
+                output_dir=Path(file_path).parent/output_dir_name
+                file_mp3_path=glob.glob(output_dir/"chapters"/"*_final.mp3")
+                if file_mp3_path:
+                    for mp3_path in file_mp3_path:
+                        if os.path.exists(mp3_path):
+                            # 检查MP3文件是否可播放
+                            try:
+                                from pydub import AudioSegment
+                                audio = AudioSegment.from_mp3(str(mp3_path))
+                            except Exception as e:
+                                chapters_error.append(chapter)
+                                print( f"最终MP3文件无法播放: {e}")
+                            print(f"✅ 文件 {mp3_path} 存在")
+                        else:
+                            print(f"❌ 文件 {mp3_path} 不存在")
+                            chapters_error.append(chapter)
+                        print(f"✅ 文件 {mp3_path} 存在")
+                    return True
+                else:
+                    print(f"❌ 文件 {file_mp3_path} 不存在")
+                    chapters_error.append(chapter)
 
-    def chess_rss_status(input_directory):
-        podcast_rss_status=input_directory+local_rss_file_name
-
-
-    def chess_audio_update(input_directory):
-        return False
+        return chapters_error
     def check_file_exists(self):
         self.chapters=self.get_chapters_info(self.story_title)
         if not self.chapters:
