@@ -82,6 +82,7 @@ def check_and_rebuild_if_needed(input_directory, txt_file_path,story_title,chapt
                     return False
             else:
                 print(f"  -> 最终MP3文件已存在且有效: {mp3}")
+                db_manager.update_chapter_audio_status(story_title, chapter_number, 'completed')
                 return True
 
     except Exception as e:

@@ -379,7 +379,7 @@ async def download_single_story(story_info: dict, cookies_str: str, base_output_
                 await download_chapter_content(url, i, story_output_dir, cookies_str, status, story_title, machine_id)
 
         # 重试失败
-        await retry_failed_chapters(output_dir, chapter_urls, cookies_str, status)
+        await retry_failed_chapters( chapter_urls, cookies_str, status)
 
         # 检查并重新下载缺失的章节
         print("检查缺失章节...")

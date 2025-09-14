@@ -6,6 +6,7 @@ from pathlib import Path
 import glob
 from config.database import DatabaseManager
 from wattpad_downloader import OUTPUT_DIR, YOUR_WATTPAD_COOKIES
+from check_audiobook_status import CheckAudioBookStatus
 
 
 class DistributedController:
@@ -551,6 +552,17 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 分配新任务时出错: {e}")
 
+    def check_handler_story(self):
+       stories=self.get_assigned_stories()
+       for story in stories:
+            check=CheckAudioBookStatus(input_directory="",story_title=story['title'])
+            file_status=check.check_file_exists()
+            if file_status:
+                check.get_chapters_info()
+            story_title=story['title']
+            self.check_and_update_rss(story_title)
+
+
     def run(self):
         """
         运行分布式控制器主循环
@@ -567,6 +579,7 @@ class DistributedController:
 
         while self.is_running:
             try:
+
                 print(f"\n🔄 执行任务检查周期...")
 
                 # 1. 首先检查并处理已分配但未完成的任务
