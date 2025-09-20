@@ -1,9 +1,5 @@
-# main_controller.py
-import asyncio
-import os
+
 import signal
-import sys
-from pathlib import Path
 from config.database import DatabaseManager
 from distributed_controller import DistributedController
 

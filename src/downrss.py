@@ -3,6 +3,14 @@ import mysql.connector
 from datetime import datetime, timedelta
 import logging
 import uuid
+import httpx
+from time import sleep
+import urllib3
+import os
+import tempfile
+
+# 禁用SSL警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -298,12 +306,58 @@ class RssSyncService:
     def parse_rss(self, rss_url):
         """解析RSS"""
         try:
-            # 使用feedparser解析RSS
-            feed = feedparser.parse(rss_url)
-
-            if feed.bozo:
-                logger.warning(f"RSS解析警告: {rss_url}, warning={feed.bozo_exception}")
-
+            # 检查rss_url是否为本地文件路径
+            if os.path.exists(rss_url):
+                # 直接解析本地文件
+                feed = feedparser.parse(rss_url)
+                logger.info(f"成功解析本地RSS文件: {rss_url}")
+            else:
+                # 原有的网络下载逻辑
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        # 设置请求头，模拟浏览器访问
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                        }
+                        
+                        # 创建httpx客户端并配置重试策略
+                        client = httpx.Client(
+                            headers=headers,
+                            timeout=30.0,
+                            verify=False
+                        )
+                        
+                        # 下载RSS内容到临时文件
+                        response = client.get(rss_url, follow_redirects=True)
+                        response.raise_for_status()
+                        
+                        # 创建临时文件保存RSS内容
+                        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.xml') as tmp_file:
+                            tmp_file.write(response.content)
+                            temp_filename = tmp_file.name
+                        
+                        # 使用feedparser解析临时文件
+                        feed = feedparser.parse(temp_filename)
+                        
+                        # 删除临时文件
+                        os.unlink(temp_filename)
+                        
+                        # 关闭httpx客户端
+                        client.close()
+                        
+                        if feed.bozo:
+                            logger.warning(f"RSS解析警告: {rss_url}, warning={feed.bozo_exception}")
+                        
+                        break  # 成功解析后跳出重试循环
+                    except Exception as e:
+                        logger.warning(f"第{attempt+1}次尝试解析RSS失败: url={rss_url}, error={str(e)}")
+                        if attempt < max_retries - 1:
+                            sleep(2 ** attempt)  # 指数退避
+                        else:
+                            logger.error(f"解析RSS最终失败: url={rss_url}, error={str(e)}")
+                            raise Exception(f"解析RSS失败: {str(e)}")
+            
             return feed
         except Exception as e:
             logger.error(f"解析RSS失败: url={rss_url}, error={str(e)}")
@@ -402,5 +456,5 @@ if __name__ == "__main__":
     sync_service = RssSyncService(db_config)
 
     # 根据RSS URL同步播客
-    result = sync_service.sync_podcast_by_rss("https://anchor.fm/s/108621f0c/podcast/rss")
+    result = sync_service.sync_podcast_by_rss("C:/Users/ws/Downloads/rss.xml")
     print(result)
