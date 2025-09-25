@@ -6,6 +6,7 @@ from pathlib import Path
 import glob
 from config.database import DatabaseManager
 from wattpad_downloader import OUTPUT_DIR, YOUR_WATTPAD_COOKIES
+from generate_and_deploy_rss import run_rss_update_process
 
 
 class DistributedController:
@@ -298,7 +299,6 @@ class DistributedController:
                     f"📡 开始{'重新' if chapter_info['rss_status'] == 'failed' else ''}更新RSS: {story_title} 第{chapter_number}章")
                 try:
                     story_dir = os.path.join(OUTPUT_DIR, story_title)
-                    from generate_and_deploy_rss import run_rss_update_process
                     success = run_rss_update_process(story_dir)
 
                     if success:
@@ -551,15 +551,6 @@ class DistributedController:
         except Exception as e:
             print(f"❌ 分配新任务时出错: {e}")
 
-    def check_handler_story(self):
-       stories=self.get_assigned_stories()
-       for story in stories:
-            check=CheckAudioBookStatus(input_directory="",story_title=story['title'])
-            file_status=check.check_file_exists()
-            if file_status:
-                check.get_chapters_info()
-            story_title=story['title']
-            self.check_and_update_rss(story_title)
 
 
     def run(self):

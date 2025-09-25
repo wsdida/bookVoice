@@ -45,7 +45,7 @@ MP3_FILE_PATTERN = "chapter_*_final.mp3"
 TXT_FILE_PATTERN = "chapter_*.txt"
 # 章节内容子目录 (如果存在)
 CHAPTERS_SUBDIR = "chapters"
-ollama_clent = Client(host="127.0.0.1") # 注意：原文件此处拼写为 ollama_clent，保持一致
+ollama_clent = Client() # 注意：原文件此处拼写为 ollama_clent，保持一致
 # --- 常量定义结束 ---
 def remove_special_chars(url):
     """Remove invalid characters from a URL path and return a clean path.""";
